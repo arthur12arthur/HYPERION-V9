@@ -1,0 +1,11 @@
+google-generativeai
+firebase-admin
+pyyaml
+pydantic
+requests
+beautifulsoup4
+pandas
+numpy
+python-telegram-bot
+python-dotenv
+pytest

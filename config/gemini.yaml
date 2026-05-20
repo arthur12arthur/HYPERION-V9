@@ -1,0 +1,18 @@
+model: "gemini-2.5-flash"
+temperature: 0.1
+max_output_tokens: 8192
+daily_quota_per_key: 24
+total_keys: 2
+
+# Allocation par tâche
+allocation:
+  lonab_extraction: 1       # 0 si scraping HTML, 1 si PDF scanné
+  enrichissement: 0          # scraping pur
+  reporting_batch: 1         # 1 seul appel pour 10 courses
+  evaluation_soir: 1         # synthèse narrative
+  reserve: 20                # marge sécurité
+
+# Seuil de bascule mode dégradé
+degraded_mode_threshold: 3   # si appels_restants < 3 → template statique
+
+response_mime_type: "application/json"

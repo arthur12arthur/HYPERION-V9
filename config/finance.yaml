@@ -1,0 +1,10 @@
+kelly_fraction: 0.25      # fraction Kelly appliquée (25% du Kelly brut)
+kelly_max_pct: 0.05       # mise max = 5% du capital
+ev_threshold: 0.05        # EV minimum pour value bet
+bookmaker_margin: 0.15    # marge bookmaker estimée (15%)
+capital_reference: 100000 # capital de référence en FCFA
+
+risk_levels:
+  FAIBLE:  0.75           # score risque < 0.75
+  MODERE:  0.45           # score risque 0.45 - 0.75
+  # > 0.75 = ELEVE

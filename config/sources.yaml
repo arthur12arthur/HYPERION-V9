@@ -1,0 +1,40 @@
+lonab:
+  url: "https://www.lonab.bf"
+  programme_path: "/programme"
+  confiance: 1.0
+  scraping_method: "html_first"   # html_first | pdf | gemini
+
+pmu:
+  url: "https://www.pmu.fr"
+  partants_path: "/turf/{date}/{hippodrome}/{course_id}/partants"
+  resultats_path: "/turf/{date}/resultats"
+  confiance: 1.0
+
+sources_externes:
+  - nom: "Paris-Turf"
+    url: "https://www.paris-turf.com"
+    pronostic_path: "/pronostic/{date}"
+    confiance: 0.85
+    type: "web"
+
+  - nom: "Equidia"
+    url: "https://www.equidia.fr"
+    pronostic_path: "/courses/{date}"
+    confiance: 0.80
+    type: "web"
+
+  - nom: "Zone-Turf"
+    url: "https://www.zone-turf.com"
+    pronostic_path: "/pronostic/{date}"
+    confiance: 0.65
+    type: "web"
+
+resultats_backup:
+  - "https://www.equidia.fr/resultats/{date}"
+  - "https://www.paris-turf.com/resultats/{date}"
+
+scraping:
+  timeout_seconds: 15
+  user_agent: "Mozilla/5.0 (compatible; HYPERION/9.4)"
+  retry_max: 2
+  delay_between_requests: 1.5

@@ -1,0 +1,27 @@
+hyperion_version: "9.4"
+market: "LONAB"
+country: "Burkina Faso"
+timezone: "Africa/Ouagadougou"
+max_courses_per_day: 10
+mode_test: true
+
+paths:
+  data: "./data"
+  backup: "./backup"
+  logs: "./backup/logs"
+
+pipeline:
+  morning_hour: 9
+  evening_hour: 20
+  retry_max: 3
+  retry_delay_seconds: 1800
+
+database:
+  engine: "firebase"
+  backup_engine: "json_local"
+  backup_path: "./backup"
+
+telegram:
+  parse_mode: "MarkdownV2"
+  max_message_length: 4096
+  retry_delays: [30, 60, 90]

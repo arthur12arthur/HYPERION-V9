@@ -1,0 +1,16 @@
+enabled: true
+mode_test: true       # true = observation seule, false = blocage actif
+
+# Seuils de détection
+cote_deviation_threshold: 0.20    # variation > 20% en 1h → alerte
+artificial_favorite_prob_max: 0.10 # win_prob < 10% mais cote très basse
+buzz_multiplier: 3.0               # mentions Telegram 3× la normale
+score_alerte_threshold: 0.70       # score HADES > 0.70 → alerte rouge
+
+# Niveaux
+niveau_green_max: 0.40
+niveau_yellow_max: 0.70
+# > 0.70 = RED
+
+# En mode test : logguer, afficher, ne jamais bloquer
+# En production : bloquer les recommandations de mise si RED

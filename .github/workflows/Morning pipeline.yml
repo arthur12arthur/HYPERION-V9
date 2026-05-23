@@ -1,0 +1,46 @@
+name: HYPERION — Analyse du Matin
+
+on:
+  schedule:
+    - cron: '0 7 * * *'   # 07h00 UTC = 07h00 Ouagadougou
+  workflow_dispatch:        # Déclenchement manuel possible
+
+jobs:
+  run-morning-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run morning pipeline
+        env:
+          GEMINI_API_KEY_1    : ${{ secrets.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2    : ${{ secrets.GEMINI_API_KEY_2 }}
+          FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
+          TELEGRAM_BOT_TOKEN  : ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID    : ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/run_morning.py
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: hyperion-logs-morning
+          path: backup/logs/
+          retention-days: 7

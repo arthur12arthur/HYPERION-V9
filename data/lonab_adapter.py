@@ -1,52 +1,41 @@
 """
 HYPERION V9 — LONAB Adapter (Agent B - Étape 1)
-Identifie la course LONAB du jour via cascade :
-  1. Scraping HTML lonab.bf
-  2. Extraction PDF pdfplumber
-  3. Gemini Vision (dernier recours)
-  4. Fallback : course PMU de remplacement
-  
-Implémente cascade de fallback URLs en cas d'indisponibilité.
+Identifie la course LONAB du jour via :
+  1. Téléchargement + extraction PDF (lonab_scraper)
+  2. Extraction via Gemini Vision
+  3. Fallback : course PMU de remplacement
+
+Utilise le scraper V7 éprouvé pour récupérer le PDF LONAB
 """
 import os
 import re
-import time
-import requests
-import pdfplumber
 from io import BytesIO
 from typing import Optional, Tuple
-from bs4 import BeautifulSoup
+from datetime import datetime
 
 from domain.schemas import Course, Runner, ProgramDocument
 from utils.logger import get_logger
 from utils.config import config
 from utils.helpers import today_str, now_iso, safe_json_loads
 from utils.validators import filter_valid_runners, parse_forme
+from data.lonab_scraper import lonab_scraper, ScraperStatus
 
 logger = get_logger(__name__)
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
 TIMEOUT = config.sources.get("lonab", {}).get("timeout_seconds", 20)
-RETRY_MAX = config.sources.get("lonab", {}).get("retry_max", 3)
-RETRY_DELAYS = config.sources.get("scraping", {}).get("retry_delays", [2, 5, 10])
-LONAB_BASE = config.sources.get("lonab", {}).get("url", "https://www.lonab.bf")
-LONAB_FALLBACKS = config.sources.get("lonab", {}).get("fallback_urls", [])
 
 
 class LonabAdapter:
     """
     Extrait la course officielle LONAB du jour.
-    Cascade de 4 méthodes — le pipeline ne s'arrête jamais.
-    Implémente fallback URLs avec retry exponentiel.
+    Utilise le scraper PDF éprouvé de V7.
+    Cascade : Scraper PDF → Gemini Vision → Fallback PMU
     """
 
     def __init__(self):
-        self.lonab_urls = [LONAB_BASE] + LONAB_FALLBACKS
-        self.current_url_index = 0
-        self.monitor   = None  # injecté par l'orchestrateur
-        logger.info(f"[LONAB] URLs configurées : {self.lonab_urls}")
+        self.scraper = lonab_scraper
+        self.monitor = None  # injecté par l'orchestrateur
+        logger.info("[LONAB] Adapter initialisé avec scraper PDF")
 
     def set_monitor(self, monitor):
         self.monitor = monitor
@@ -56,71 +45,37 @@ class LonabAdapter:
         if self.monitor:
             self.monitor.log(f"LONAB_{step}", status, message)
 
-    def _make_request(self, url: str, max_retries: int = None) -> Optional[requests.Response]:
-        """
-        Effectue une requête HTTP avec retry exponentiel.
-        """
-        if max_retries is None:
-            max_retries = RETRY_MAX
-
-        for attempt in range(max_retries):
-            try:
-                resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-                if resp.status_code == 200:
-                    return resp
-                
-                logger.debug(f"LONAB request status {resp.status_code} pour {url}")
-                
-                # Attendre avant retry
-                if attempt < max_retries - 1:
-                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-                    logger.debug(f"Retry dans {delay}s...")
-                    time.sleep(delay)
-                    
-            except requests.Timeout:
-                self._log("TIMEOUT", f"Tentative {attempt + 1}/{max_retries}", url)
-                if attempt < max_retries - 1:
-                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-                    time.sleep(delay)
-                    
-            except requests.ConnectionError as e:
-                self._log("CONNECTION_ERROR", f"Tentative {attempt + 1}/{max_retries}", str(e)[:60])
-                if attempt < max_retries - 1:
-                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-                    time.sleep(delay)
-                    
-            except Exception as e:
-                logger.debug(f"Request error: {e}")
-                if attempt < max_retries - 1:
-                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
-                    time.sleep(delay)
-
-        return None
-
-    # ──────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
     # MÉTHODE PRINCIPALE
-    # ──────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
     def get_lonab_course(self, date_str: str = None) -> Tuple[Optional[Course], str]:
         """
         Retourne (course_lonab, methode_utilisee).
         course_lonab peut être None si toutes les méthodes échouent.
+        
+        Cascade :
+          1. PDF Scraper (éprouvé V7)
+          2. Gemini Vision (dernier recours)
+          3. None → fallback PMU requis
         """
         if date_str is None:
             date_str = today_str()
 
-        # Tentative 1 : Scraping HTML
-        course = self._try_html_scraping(date_str)
-        if course:
-            self._log("HTML", "OK", f"Course identifiée : {course.nom}")
-            return course, "HTML_SCRAPING"
+        # Convertir format YYYY-MM-DD → datetime pour le scraper
+        try:
+            year, month, day = date_str.split("-")
+            target_date = datetime(int(year), int(month), int(day))
+        except Exception as e:
+            logger.error(f"[LONAB] Format date invalide : {date_str}")
+            return None, "FAILED"
 
-        # Tentative 2 : PDF pdfplumber
-        course = self._try_pdf_plumber(date_str)
+        # Tentative 1 : Scraper PDF
+        course = self._try_pdf_scraper(target_date)
         if course:
-            self._log("PDF_PLUMBER", "OK", f"Course identifiée : {course.nom}")
-            return course, "PDF_PLUMBER"
+            self._log("PDF_SCRAPER", "OK", f"Course identifiée : {course.nom}")
+            return course, "PDF_SCRAPER"
 
-        # Tentative 3 : Gemini Vision
+        # Tentative 2 : Gemini Vision
         course = self._try_gemini_vision(date_str)
         if course:
             self._log("GEMINI_VISION", "OK", f"Course identifiée : {course.nom}")
@@ -136,179 +91,64 @@ class LonabAdapter:
             )
         return None, "FAILED"
 
-    # ──────────────────────────────────────────────────────────────
-    # TENTATIVE 1 — SCRAPING HTML
-    # ──────────────────────────────────────────────────────────────
-    def _try_html_scraping(self, date_str: str) -> Optional[Course]:
-        """Scrape la page programme de lonab.bf avec fallbacks"""
-        for base_url in self.lonab_urls:
-            try:
-                urls_to_try = [
-                    f"{base_url}/programme",
-                    f"{base_url}/programme-du-jour",
-                    f"{base_url}",
-                ]
-
-                for url in urls_to_try:
-                    try:
-                        resp = self._make_request(url, max_retries=2)
-                        if resp:
-                            soup = BeautifulSoup(resp.text, "lxml")
-                            course = self._parse_lonab_html(soup, date_str)
-                            if course:
-                                return course
-
-                    except requests.RequestException:
-                        continue
-
-            except Exception as e:
-                self._log("HTML", "FAIL", str(e)[:100])
-                continue
-
-        return None
-
-    def _parse_lonab_html(self, soup: BeautifulSoup, date_str: str) -> Optional[Course]:
+    # ──────────────────────────────────────────────────────────────────
+    # TENTATIVE 1 — SCRAPER PDF (V7)
+    # ──────────────────────────────────────────────────────────────────
+    def _try_pdf_scraper(self, target_date: datetime) -> Optional[Course]:
         """
-        Parse la page HTML LONAB pour extraire la course du jour.
-        Structure approximative — à ajuster selon la vraie structure lonab.bf
+        Utilise le scraper PDF éprouvé de V7.
+        Télécharge le PDF LONAB et l'extrait.
         """
         try:
-            # Chercher les éléments contenant les informations de course
-            # Patterns courants sur les sites hippiques africains
-            course_blocks = (
-                soup.find_all("div", class_=re.compile(r"course|race|programme", re.I)) or
-                soup.find_all("table", class_=re.compile(r"course|partant|programme", re.I)) or
-                soup.find_all("section", class_=re.compile(r"course|programme", re.I))
-            )
+            self._log("PDF_SCRAPER", "RUNNING", f"Téléchargement PDF {target_date.strftime('%d/%m/%Y')}")
 
-            if not course_blocks:
-                logger.debug("LONAB HTML: aucun bloc course trouvé")
+            # Télécharger PDF via scraper V7
+            scraper_result = self.scraper.get_program_status(target_date, force_download=False)
+
+            if scraper_result.status == ScraperStatus.UNAVAILABLE:
+                self._log("PDF_SCRAPER", "UNAVAILABLE", scraper_result.reason)
                 return None
 
-            # Chercher hippodrome et nom de course
-            hippodrome = self._extract_text_pattern(
-                soup, r"(Vincennes|Cagnes|Longchamp|Auteuil|Chantilly|Deauville|Saint-Cloud|Pau|Lyon)"
-            )
-            nom_course = self._extract_text_pattern(
-                soup, r"(Prix|Course|Réunion)\s+[\w\s\-\']{3,50}"
-            )
-            heure = self._extract_text_pattern(soup, r"\d{1,2}[h:]\d{2}")
-
-            if not hippodrome and not nom_course:
+            if scraper_result.status == ScraperStatus.NOT_FOUND:
+                self._log("PDF_SCRAPER", "NOT_FOUND", scraper_result.reason)
                 return None
 
-            # Extraire les partants depuis les tableaux
-            partants = self._extract_runners_from_html(soup, date_str)
+            # PDF trouvé et téléchargé
+            pdf_path = scraper_result.pdf_path
+            self._log("PDF_SCRAPER", "OK", f"PDF téléchargé : {pdf_path}")
 
-            if len(partants) < 3:
-                logger.debug(f"LONAB HTML: seulement {len(partants)} partants trouvés")
-                return None
-
-            return Course(
-                course_id  = "R1C1_LONAB",
-                nom        = nom_course or "Course LONAB",
-                date       = date_str,
-                heure      = heure,
-                hippodrome = hippodrome,
-                partants   = partants,
-                is_lonab   = True,
-                source     = "LONAB_HTML"
-            )
+            # Extraire contenu PDF via pdfplumber
+            course = self._extract_from_pdf(pdf_path, target_date.strftime("%Y-%m-%d"))
+            return course
 
         except Exception as e:
-            logger.warning(f"LONAB HTML parse error: {e}")
+            self._log("PDF_SCRAPER", "FAIL", str(e)[:100])
             return None
 
-    def _extract_text_pattern(self, soup: BeautifulSoup, pattern: str) -> Optional[str]:
-        """Cherche un pattern regex dans le texte de la page."""
-        text = soup.get_text(" ", strip=True)
-        match = re.search(pattern, text, re.IGNORECASE)
-        return match.group(0).strip() if match else None
-
-    def _extract_runners_from_html(self, soup: BeautifulSoup, date_str: str) -> list:
-        """Extrait les partants depuis les tableaux HTML."""
-        runners = []
-
-        rows = soup.find_all("tr")
-        for row in rows:
-            cells = row.find_all(["td", "th"])
-            if len(cells) < 3:
-                continue
-
-            texts = [c.get_text(strip=True) for c in cells]
-
-            # Chercher une ligne avec un numéro de partant
-            numero_str = texts[0] if texts else ""
-            if not numero_str.isdigit():
-                continue
-
-            try:
-                runner = Runner(
-                    numero           = int(numero_str),
-                    nom              = texts[1] if len(texts) > 1 else f"CHEVAL_{numero_str}",
-                    poids            = float(texts[3]) if len(texts) > 3 and texts[3].replace(".", "").isdigit() else 58.0,
-                    cote_officielle  = float(texts[-1]) if texts[-1].replace(".", "").isdigit() else 0.0,
-                    forme_brute      = texts[4] if len(texts) > 4 else None,
-                    source           = "LONAB_HTML"
-                )
-                runners.append(runner)
-            except Exception:
-                continue
-
-        return runners
-
-    # ──────────────────────────────────────────────────────────────
-    # TENTATIVE 2 — PDF PDFPLUMBER
-    # ──────────────────────────────────────────────────────────────
-    def _try_pdf_plumber(self, date_str: str) -> Optional[Course]:
-        """Télécharge et parse le PDF du journal hippique LONAB avec fallbacks."""
-        for base_url in self.lonab_urls:
-            try:
-                pdf_urls = [
-                    f"{base_url}/programme/{date_str}.pdf",
-                    f"{base_url}/journal/{date_str}.pdf",
-                    f"{base_url}/programme.pdf",
-                ]
-
-                for pdf_url in pdf_urls:
-                    try:
-                        resp = self._make_request(pdf_url, max_retries=2)
-                        if resp and "application/pdf" in resp.headers.get("Content-Type", ""):
-                            course = self._parse_pdf_content(resp.content, date_str)
-                            if course:
-                                return course
-
-                    except requests.RequestException:
-                        continue
-
-            except Exception as e:
-                self._log("PDF_PLUMBER", "FAIL", str(e)[:100])
-                continue
-
-        return None
-
-    def _parse_pdf_content(self, pdf_bytes: bytes, date_str: str) -> Optional[Course]:
-        """Parse un PDF avec pdfplumber pour extraire la course."""
+    def _extract_from_pdf(self, pdf_path, date_str: str) -> Optional[Course]:
+        """Extrait une course depuis le PDF LONAB."""
         try:
-            with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            import pdfplumber
+
+            with pdfplumber.open(pdf_path) as pdf:
                 full_text = ""
                 for page in pdf.pages:
                     full_text += page.extract_text() or ""
 
                 if not full_text.strip():
-                    logger.debug("PDF vide ou scanné — pdfplumber ne peut pas extraire")
+                    logger.debug("[LONAB] PDF vide ou scanné")
                     return None
 
                 return self._parse_text_content(full_text, date_str, source="LONAB_PDF")
 
         except Exception as e:
-            logger.warning(f"pdfplumber parse error: {e}")
+            logger.warning(f"[LONAB] Erreur extraction PDF : {e}")
             return None
 
     def _parse_text_content(self, text: str, date_str: str, source: str) -> Optional[Course]:
         """
-        Parse du texte brut (PDF ou HTML to text) pour extraire une course.
-        Patterns génériques adaptés aux journaux hippiques français.
+        Parse du texte brut (PDF) pour extraire une course.
+        Patterns génériques adaptés aux journaux hippiques.
         """
         lines = text.split("\n")
 
@@ -316,7 +156,8 @@ class LonabAdapter:
         hippodromes_fr = [
             "Vincennes", "Cagnes", "Longchamp", "Auteuil", "Chantilly",
             "Deauville", "Saint-Cloud", "Pau", "Lyon", "Marseille",
-            "Toulouse", "Bordeaux", "Nantes", "Strasbourg"
+            "Toulouse", "Bordeaux", "Nantes", "Strasbourg", "Paris",
+            "Enghien", "Compiegne", "Fontainebleau"
         ]
         hippodrome = None
         for hp in hippodromes_fr:
@@ -324,10 +165,20 @@ class LonabAdapter:
                 hippodrome = hp
                 break
 
+        if not hippodrome:
+            # Essayer extraction depuis les lignes
+            for line in lines[:20]:  # premiers 20 lignes
+                for hp in hippodromes_fr:
+                    if hp.lower() in line.lower():
+                        hippodrome = hp
+                        break
+                if hippodrome:
+                    break
+
         # Chercher les partants (lignes avec numéro + nom + cote)
         runners = []
         runner_pattern = re.compile(
-            r"^(\d{1,2})\s+([A-Z][A-Z\s\'\-]{2,30})\s+.*?(\d+[\.,]\d+)\s*$"
+            r"^(\d{1,2})\s+([A-Z][A-Z\s\'\-]{2,40})\s+.*?(\d+[\.,]\d+)\s*$"
         )
 
         for line in lines:
@@ -335,50 +186,60 @@ class LonabAdapter:
             if match:
                 try:
                     numero = int(match.group(1))
-                    nom    = match.group(2).strip()
-                    cote   = float(match.group(3).replace(",", "."))
+                    nom = match.group(2).strip()
+                    cote = float(match.group(3).replace(",", "."))
 
                     # Extraire poids si présent
                     poids_match = re.search(r"(\d{2,3}[\.,]\d)\s*kg", line)
                     poids = float(poids_match.group(1).replace(",", ".")) if poids_match else 58.0
 
                     runners.append(Runner(
-                        numero          = numero,
-                        nom             = nom,
-                        poids           = poids,
-                        cote_officielle = cote,
-                        source          = source
+                        numero=numero,
+                        nom=nom,
+                        poids=poids,
+                        cote_officielle=cote,
+                        source=source
                     ))
                 except Exception:
                     continue
 
         if len(runners) < 3:
+            logger.debug(f"[LONAB] Seulement {len(runners)} partants trouvés")
             return None
 
         # Chercher nom de course
-        nom_match = re.search(r"(Prix|Course|Réunion)\s+([\w\s\-\']{3,40})", text, re.IGNORECASE)
+        nom_match = re.search(
+            r"(Prix|Course|Réunion|Conditions)\s+([\w\s\-\']{3,60})",
+            text,
+            re.IGNORECASE
+        )
         nom_course = nom_match.group(0).strip() if nom_match else "Course LONAB"
 
         # Chercher heure
         heure_match = re.search(r"\d{1,2}[h:]\d{2}", text)
         heure = heure_match.group(0) if heure_match else None
 
+        # Chercher distance
+        distance_match = re.search(r"(\d{3,4})\s*m(?:ètres)?", text)
+        distance = int(distance_match.group(1)) if distance_match else None
+
         return Course(
-            course_id  = "R1C1_LONAB",
-            nom        = nom_course,
-            date       = date_str,
-            heure      = heure,
-            hippodrome = hippodrome,
-            partants   = runners,
-            is_lonab   = True,
-            source     = source
+            course_id="R1C1_LONAB",
+            nom=nom_course,
+            date=date_str,
+            heure=heure,
+            hippodrome=hippodrome,
+            distance=distance,
+            partants=runners,
+            is_lonab=True,
+            source=source
         )
 
-    # ──────────────────────────────────────────────────────────────
-    # TENTATIVE 3 — GEMINI VISION (DERNIER RECOURS)
-    # ──────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
+    # TENTATIVE 2 — GEMINI VISION (DERNIER RECOURS)
+    # ──────────────────────────────────────────────────────────────────
     def _try_gemini_vision(self, date_str: str) -> Optional[Course]:
-        """Utilise Gemini Vision pour lire le PDF si pdfplumber échoue."""
+        """Utilise Gemini Vision comme dernier recours."""
         try:
             from utils.quota_manager import quota_manager
 
@@ -386,52 +247,55 @@ class LonabAdapter:
                 self._log("GEMINI_VISION", "SKIP", "Quota épuisé")
                 return None
 
-            # Télécharger le PDF depuis le premier URL disponible
-            for base_url in self.lonab_urls:
-                try:
-                    pdf_url = f"{base_url}/programme.pdf"
-                    resp = self._make_request(pdf_url, max_retries=2)
-                    if not resp:
-                        continue
+            # Chercher PDF en cache ou télécharger
+            try:
+                year, month, day = date_str.split("-")
+                target_date = datetime(int(year), int(month), int(day))
+            except Exception:
+                return None
 
-                    import base64
-                    pdf_b64 = base64.b64encode(resp.content).decode("utf-8")
+            scraper_result = self.scraper.get_program_status(target_date)
+            if not scraper_result.pdf_path:
+                return None
 
-                    prompt = self._build_vision_prompt(date_str)
+            pdf_path = scraper_result.pdf_path
 
-                    # Appel Gemini Vision avec le PDF en base64
-                    import google.generativeai as genai
-                    key = quota_manager.keys[quota_manager.current]["value"]
-                    genai.configure(api_key=key)
+            import base64
+            with open(pdf_path, "rb") as f:
+                pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-                    model = genai.GenerativeModel("gemini-1.5-flash")
-                    response = model.generate_content([
-                        {"mime_type": "application/pdf", "data": pdf_b64},
-                        prompt
-                    ])
+            prompt = self._build_vision_prompt(date_str)
 
-                    quota_manager.keys[quota_manager.current]["calls"] += 1
-                    self._log("GEMINI_VISION", "APPEL_EFFECTUE", "1 token utilisé")
+            # Appel Gemini Vision
+            import google.generativeai as genai
+            key = quota_manager.keys[quota_manager.current]["value"]
+            genai.configure(api_key=key)
 
-                    result = safe_json_loads(response.text)
-                    if not result:
-                        continue
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content([
+                {"mime_type": "application/pdf", "data": pdf_b64},
+                prompt
+            ])
 
-                    course = self._build_course_from_gemini(result, date_str)
-                    if course:
-                        return course
+            quota_manager.keys[quota_manager.current]["calls"] += 1
+            self._log("GEMINI_VISION", "APPEL_EFFECTUE", "1 token utilisé")
 
-                except requests.RequestException:
-                    continue
+            result = safe_json_loads(response.text)
+            if not result:
+                return None
+
+            return self._build_course_from_gemini(result, date_str)
 
         except Exception as e:
             self._log("GEMINI_VISION", "FAIL", str(e)[:100])
-
-        return None
+            return None
 
     def _build_vision_prompt(self, date_str: str) -> str:
-        from utils.config import config
-        base_prompt = config.load_prompt("extraction")
+        """Construit le prompt pour Gemini Vision."""
+        base_prompt = config.load_prompt("extraction") if hasattr(config, "load_prompt") else (
+            "Extrais la course hippique principale du document en JSON. "
+            "Format: {'course_id': '...', 'nom': '...', 'hippodrome': '...', 'partants': [...]}"
+        )
         return f"{base_prompt}\nDate attendue : {date_str}"
 
     def _build_course_from_gemini(self, data: dict, date_str: str) -> Optional[Course]:
@@ -441,26 +305,26 @@ class LonabAdapter:
             if not courses_data:
                 return None
 
-            c_data   = courses_data[0]
+            c_data = courses_data[0]
             partants = []
 
             for p in c_data.get("partants", []):
                 try:
                     forme_brute = p.get("forme_brute")
                     runner = Runner(
-                        numero          = int(p.get("numero", 0)),
-                        nom             = str(p.get("nom", "")).strip(),
-                        age             = p.get("age"),
-                        sexe            = p.get("sexe"),
-                        poids           = float(p.get("poids", 58.0)),
-                        corde           = p.get("corde"),
-                        forme_brute     = forme_brute,
-                        forme_parsed    = parse_forme(forme_brute) if forme_brute else [],
-                        gains_totaux    = p.get("gains_totaux"),
-                        jockey          = p.get("jockey"),
-                        entraineur      = p.get("entraineur"),
-                        cote_officielle = float(p.get("cote_officielle", 0.0)),
-                        source          = "LONAB_GEMINI_VISION"
+                        numero=int(p.get("numero", 0)),
+                        nom=str(p.get("nom", "")).strip(),
+                        age=p.get("age"),
+                        sexe=p.get("sexe"),
+                        poids=float(p.get("poids", 58.0)),
+                        corde=p.get("corde"),
+                        forme_brute=forme_brute,
+                        forme_parsed=parse_forme(forme_brute) if forme_brute else [],
+                        gains_totaux=p.get("gains_totaux"),
+                        jockey=p.get("jockey"),
+                        entraineur=p.get("entraineur"),
+                        cote_officielle=float(p.get("cote_officielle", 0.0)),
+                        source="LONAB_GEMINI_VISION"
                     )
                     partants.append(runner)
                 except Exception:
@@ -470,20 +334,20 @@ class LonabAdapter:
                 return None
 
             return Course(
-                course_id  = c_data.get("course_id", "R1C1_LONAB"),
-                nom        = c_data.get("nom", "Course LONAB"),
-                date       = date_str,
-                heure      = c_data.get("heure"),
-                hippodrome = data.get("hippodrome") or c_data.get("hippodrome"),
-                type_course= c_data.get("type_course"),
-                distance   = c_data.get("distance"),
-                conditions = c_data.get("conditions"),
-                partants   = partants,
-                is_lonab   = True,
-                source     = "LONAB_GEMINI_VISION"
+                course_id=c_data.get("course_id", "R1C1_LONAB"),
+                nom=c_data.get("nom", "Course LONAB"),
+                date=date_str,
+                heure=c_data.get("heure"),
+                hippodrome=data.get("hippodrome") or c_data.get("hippodrome"),
+                type_course=c_data.get("type_course"),
+                distance=c_data.get("distance"),
+                conditions=c_data.get("conditions"),
+                partants=partants,
+                is_lonab=True,
+                source="LONAB_GEMINI_VISION"
             )
         except Exception as e:
-            logger.warning(f"Gemini build course error: {e}")
+            logger.warning(f"[LONAB] Erreur build course from Gemini : {e}")
             return None
 
 

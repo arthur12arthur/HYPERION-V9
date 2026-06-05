@@ -1,8 +1,6 @@
 lonab:
   url: "https://www.lonab.bf"
-  fallback_urls:
-    - "https://lonab.bf"
-    - "https://api.lonab.bf"
+  fallback_urls: []  # Pas de fallback valide pour LONAB
   programme_path: "/programme"
   confiance: 1.0
   scraping_method: "html_first"   # html_first | pdf | gemini
@@ -11,10 +9,7 @@ lonab:
 
 pmu:
   url: "https://www.pmu.fr"
-  fallback_urls:
-    - "https://pmu.fr"
-    - "https://api.pmu.fr"
-    - "https://rest.pmu.fr"
+  fallback_urls: []  # Pas de fallback valide pour PMU
   partants_path: "/turf/{date}/{hippodrome}/{course_id}/partants"
   resultats_path: "/turf/{date}/resultats"
   confiance: 1.0
@@ -24,8 +19,7 @@ pmu:
 sources_externes:
   - nom: "Paris-Turf"
     url: "https://www.paris-turf.com"
-    fallback_urls:
-      - "https://paris-turf.com"
+    fallback_urls: []
     pronostic_path: "/pronostic/{date}"
     confiance: 0.85
     type: "web"
@@ -33,8 +27,7 @@ sources_externes:
 
   - nom: "Equidia"
     url: "https://www.equidia.fr"
-    fallback_urls:
-      - "https://equidia.fr"
+    fallback_urls: []
     pronostic_path: "/courses/{date}"
     confiance: 0.80
     type: "web"
@@ -42,8 +35,7 @@ sources_externes:
 
   - nom: "Zone-Turf"
     url: "https://www.zone-turf.com"
-    fallback_urls:
-      - "https://zone-turf.com"
+    fallback_urls: []
     pronostic_path: "/pronostic/{date}"
     confiance: 0.65
     type: "web"
@@ -51,9 +43,7 @@ sources_externes:
 
 resultats_backup:
   - "https://www.equidia.fr/resultats/{date}"
-  - "https://equidia.fr/resultats/{date}"
   - "https://www.paris-turf.com/resultats/{date}"
-  - "https://paris-turf.com/resultats/{date}"
 
 scraping:
   timeout_seconds: 15

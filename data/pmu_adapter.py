@@ -2,6 +2,7 @@
 HYPERION V9 — PMU Adapter
 Scraping PMU.fr : partants, cotes, sélection des 10 courses du jour.
 Zéro appel Gemini — scraping pur.
+Gère les fallback URLs en cas d'indisponibilité.
 """
 import re
 import time
@@ -23,9 +24,12 @@ HEADERS = {
     "Accept-Language": "fr-FR,fr;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
-TIMEOUT  = config.sources.get("scraping", {}).get("timeout_seconds", 15)
+TIMEOUT  = config.sources.get("pmu", {}).get("timeout_seconds", 20)
 DELAY    = config.sources.get("scraping", {}).get("delay_between_requests", 1.5)
-PMU_BASE = config.pmu_base_url  # https://www.pmu.fr
+RETRY_MAX = config.sources.get("pmu", {}).get("retry_max", 3)
+RETRY_DELAYS = config.sources.get("scraping", {}).get("retry_delays", [2, 5, 10])
+PMU_BASE = config.sources.get("pmu", {}).get("url", "https://www.pmu.fr")
+PMU_FALLBACKS = config.sources.get("pmu", {}).get("fallback_urls", [])
 
 
 class PMUAdapter:
@@ -33,11 +37,15 @@ class PMUAdapter:
     Scrape PMU.fr pour obtenir :
     1. Le programme complet du jour (liste des courses)
     2. Les partants + cotes d'une course spécifique
+    
+    Implémente une cascade de fallback URLs en cas d'indisponibilité.
     """
 
     def __init__(self):
-        self.base_url = PMU_BASE
+        self.base_urls = [PMU_BASE] + PMU_FALLBACKS
+        self.current_url_index = 0
         self.monitor  = None
+        logger.info(f"[PMU] URLs configurées : {self.base_urls}")
 
     def set_monitor(self, monitor):
         self.monitor = monitor
@@ -47,6 +55,53 @@ class PMUAdapter:
         if self.monitor:
             self.monitor.log(f"PMU_{step}", status, msg)
 
+    def _get_next_url(self) -> str:
+        """Retourne l'URL actuelle et prépare la rotation."""
+        url = self.base_urls[self.current_url_index % len(self.base_urls)]
+        self.current_url_index += 1
+        return url
+
+    def _make_request(self, url: str, max_retries: int = None) -> Optional[requests.Response]:
+        """
+        Effectue une requête HTTP avec retry exponentiel.
+        """
+        if max_retries is None:
+            max_retries = RETRY_MAX
+
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+                if resp.status_code == 200:
+                    return resp
+                
+                logger.debug(f"PMU request status {resp.status_code} pour {url}")
+                
+                # Attendre avant retry
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    logger.debug(f"Retry dans {delay}s...")
+                    time.sleep(delay)
+                    
+            except requests.Timeout:
+                self._log("TIMEOUT", f"Tentative {attempt + 1}/{max_retries}", url)
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+                    
+            except requests.ConnectionError as e:
+                self._log("CONNECTION_ERROR", f"Tentative {attempt + 1}/{max_retries}", str(e)[:60])
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+                    
+            except Exception as e:
+                logger.debug(f"Request error: {e}")
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+
+        return None
+
     # ──────────────────────────────────────────────────────────────
     # PROGRAMME DU JOUR — LISTE DES COURSES
     # ──────────────────────────────────────────────────────────────
@@ -54,6 +109,7 @@ class PMUAdapter:
         """
         Récupère toutes les courses disponibles sur PMU.fr pour la date donnée.
         Retourne une liste de Course (sans partants détaillés — juste l'index).
+        Implémente cascades de fallback URLs.
         """
         if date_str is None:
             date_str = today_str()
@@ -61,33 +117,34 @@ class PMUAdapter:
         # Format date PMU : YYYY-MM-DD → YYYYMMDD ou DD-MM-YYYY selon l'URL
         date_pmu = date_str.replace("-", "")  # 20250115
 
-        urls_to_try = [
-            f"{self.base_url}/turf/jour/{date_str}",
-            f"{self.base_url}/turf/programme/{date_str}",
-            f"{self.base_url}/turf/{date_pmu}",
-        ]
+        # Essayer chaque URL de base avec ses variantes
+        for base_url in self.base_urls:
+            urls_to_try = [
+                f"{base_url}/turf/jour/{date_str}",
+                f"{base_url}/turf/programme/{date_str}",
+                f"{base_url}/turf/{date_pmu}",
+            ]
 
-        for url in urls_to_try:
-            try:
-                resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-                if resp.status_code != 200:
+            for url in urls_to_try:
+                try:
+                    resp = self._make_request(url, max_retries=2)
+                    if resp:
+                        courses = self._parse_program_page(resp.text, date_str)
+                        if courses:
+                            self._log("PROGRAMME", "OK", f"{len(courses)} courses trouvées via {base_url}")
+                            return courses
+
+                except Exception as e:
+                    self._log("PROGRAMME", "RETRY", str(e)[:60])
                     continue
 
-                courses = self._parse_program_page(resp.text, date_str)
-                if courses:
-                    self._log("PROGRAMME", "OK", f"{len(courses)} courses trouvées")
-                    return courses
-
-            except requests.RequestException as e:
-                self._log("PROGRAMME", "RETRY", str(e)[:60])
-                continue
-
         # Fallback : API JSON PMU (souvent disponible)
-        courses = self._try_pmu_api(date_str)
-        if courses:
-            return courses
+        for base_url in self.base_urls:
+            courses = self._try_pmu_api(date_str, base_url)
+            if courses:
+                return courses
 
-        self._log("PROGRAMME", "FAIL", "PMU.fr inaccessible")
+        self._log("PROGRAMME", "FAIL", "PMU.fr et tous les fallbacks inaccessibles")
         return []
 
     def _parse_program_page(self, html: str, date_str: str) -> List[Course]:
@@ -145,7 +202,7 @@ class PMUAdapter:
 
         # Lien vers la page partants
         link = block.find("a", href=re.compile(r"/turf/|/partants/"))
-        partants_url = f"{self.base_url}{link['href']}" if link and link.get("href") else None
+        partants_url = f"{self.base_urls[0]}{link['href']}" if link and link.get("href") else None
 
         return Course(
             course_id   = course_id,
@@ -159,15 +216,18 @@ class PMUAdapter:
             is_lonab    = False
         )
 
-    def _try_pmu_api(self, date_str: str) -> List[Course]:
+    def _try_pmu_api(self, date_str: str, base_url: str = None) -> List[Course]:
         """Essaie l'API JSON non-officielle de PMU.fr"""
+        if base_url is None:
+            base_url = self.base_urls[0]
+            
         try:
             # PMU expose parfois des données JSON
             date_pmu = date_str.replace("-", "")
-            url = f"{self.base_url}/rest/client/1/programme/{date_pmu}"
-            resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            url = f"{base_url}/rest/client/1/programme/{date_pmu}"
+            resp = self._make_request(url, max_retries=2)
 
-            if resp.status_code != 200:
+            if not resp:
                 return []
 
             data = resp.json()
@@ -191,7 +251,7 @@ class PMUAdapter:
                     ))
 
             if courses:
-                self._log("API_JSON", "OK", f"{len(courses)} courses via API")
+                self._log("API_JSON", "OK", f"{len(courses)} courses via API ({base_url})")
             return courses
 
         except Exception as e:
@@ -226,30 +286,29 @@ class PMUAdapter:
         return []
 
     def _scrape_runners_html(self, course: Course) -> List[Runner]:
-        """Scrape la page partants PMU.fr"""
+        """Scrape la page partants PMU.fr avec fallbacks"""
         try:
             # Construire l'URL des partants
             date_pmu = course.date.replace("-", "")
             hippodrome_slug = (course.hippodrome or "").lower().replace(" ", "-").replace("'", "")
 
-            urls = [
-                f"{self.base_url}/turf/{course.date}/{hippodrome_slug}/{course.course_id.lower()}/partants",
-                f"{self.base_url}/turf/partants/{date_pmu}/{course.course_id}",
-                f"{self.base_url}/turf/{date_pmu}/partants/{course.course_id}",
-            ]
+            for base_url in self.base_urls:
+                urls = [
+                    f"{base_url}/turf/{course.date}/{hippodrome_slug}/{course.course_id.lower()}/partants",
+                    f"{base_url}/turf/partants/{date_pmu}/{course.course_id}",
+                    f"{base_url}/turf/{date_pmu}/partants/{course.course_id}",
+                ]
 
-            for url in urls:
-                try:
-                    resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-                    if resp.status_code != 200:
+                for url in urls:
+                    try:
+                        resp = self._make_request(url, max_retries=2)
+                        if resp:
+                            runners = self._parse_runners_table(resp.text, course)
+                            if runners:
+                                return runners
+
+                    except requests.RequestException:
                         continue
-
-                    runners = self._parse_runners_table(resp.text, course)
-                    if runners:
-                        return runners
-
-                except requests.RequestException:
-                    continue
 
         except Exception as e:
             logger.debug(f"PMU runners HTML error: {e}")
@@ -325,7 +384,7 @@ class PMUAdapter:
         return runners
 
     def _fetch_runners_api(self, course: Course) -> List[Runner]:
-        """Essaie l'API JSON PMU pour les partants."""
+        """Essaie l'API JSON PMU pour les partants avec fallbacks."""
         try:
             date_pmu = course.date.replace("-", "")
             # Extraire R et C depuis course_id
@@ -336,43 +395,46 @@ class PMUAdapter:
             r_num = rc_match.group(1)
             c_num = rc_match.group(2)
 
-            url = f"{self.base_url}/rest/client/1/programme/{date_pmu}/R{r_num}/C{c_num}/partants"
-            resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+            for base_url in self.base_urls:
+                url = f"{base_url}/rest/client/1/programme/{date_pmu}/R{r_num}/C{c_num}/partants"
+                resp = self._make_request(url, max_retries=2)
 
-            if resp.status_code != 200:
-                return []
-
-            data = resp.json()
-            runners = []
-
-            for partant in data.get("partants", []):
-                cheval = partant.get("cheval", {})
-                try:
-                    forme_brute = cheval.get("formeDetail", "")
-                    runner = Runner(
-                        numero          = int(partant.get("numPmu", 0)),
-                        nom             = cheval.get("nom", "").upper().strip(),
-                        age             = cheval.get("age"),
-                        sexe            = cheval.get("sexe"),
-                        poids           = float(partant.get("poidsJockey", 58.0)),
-                        corde           = partant.get("placeCorde"),
-                        forme_brute     = forme_brute,
-                        forme_parsed    = parse_forme(forme_brute),
-                        gains_totaux    = cheval.get("gainsCarriere"),
-                        jockey          = partant.get("jockey", {}).get("nom"),
-                        entraineur      = partant.get("entraineur", {}).get("nom"),
-                        cote_officielle = float(partant.get("cotePmu", 0.0)),
-                        source          = "PMU_API_JSON"
-                    )
-                    runners.append(runner)
-                except Exception:
+                if not resp:
                     continue
 
-            return runners
+                data = resp.json()
+                runners = []
+
+                for partant in data.get("partants", []):
+                    cheval = partant.get("cheval", {})
+                    try:
+                        forme_brute = cheval.get("formeDetail", "")
+                        runner = Runner(
+                            numero          = int(partant.get("numPmu", 0)),
+                            nom             = cheval.get("nom", "").upper().strip(),
+                            age             = cheval.get("age"),
+                            sexe            = cheval.get("sexe"),
+                            poids           = float(partant.get("poidsJockey", 58.0)),
+                            corde           = partant.get("placeCorde"),
+                            forme_brute     = forme_brute,
+                            forme_parsed    = parse_forme(forme_brute),
+                            gains_totaux    = cheval.get("gainsCarriere"),
+                            jockey          = partant.get("jockey", {}).get("nom"),
+                            entraineur      = partant.get("entraineur", {}).get("nom"),
+                            cote_officielle = float(partant.get("cotePmu", 0.0)),
+                            source          = "PMU_API_JSON"
+                        )
+                        runners.append(runner)
+                    except Exception:
+                        continue
+
+                if runners:
+                    return runners
 
         except Exception as e:
             logger.debug(f"PMU runners API error: {e}")
-            return []
+
+        return []
 
     # ──────────────────────────────────────────────────────────────
     # SÉLECTION DES 10 COURSES DU JOUR

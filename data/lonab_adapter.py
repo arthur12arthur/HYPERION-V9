@@ -5,9 +5,12 @@ Identifie la course LONAB du jour via cascade :
   2. Extraction PDF pdfplumber
   3. Gemini Vision (dernier recours)
   4. Fallback : course PMU de remplacement
+  
+Implémente cascade de fallback URLs en cas d'indisponibilité.
 """
 import os
 import re
+import time
 import requests
 import pdfplumber
 from io import BytesIO
@@ -25,18 +28,25 @@ logger = get_logger(__name__)
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 }
-TIMEOUT = config.sources.get("scraping", {}).get("timeout_seconds", 15)
+TIMEOUT = config.sources.get("lonab", {}).get("timeout_seconds", 20)
+RETRY_MAX = config.sources.get("lonab", {}).get("retry_max", 3)
+RETRY_DELAYS = config.sources.get("scraping", {}).get("retry_delays", [2, 5, 10])
+LONAB_BASE = config.sources.get("lonab", {}).get("url", "https://www.lonab.bf")
+LONAB_FALLBACKS = config.sources.get("lonab", {}).get("fallback_urls", [])
 
 
 class LonabAdapter:
     """
     Extrait la course officielle LONAB du jour.
     Cascade de 4 méthodes — le pipeline ne s'arrête jamais.
+    Implémente fallback URLs avec retry exponentiel.
     """
 
     def __init__(self):
-        self.lonab_url = config.lonab_url
+        self.lonab_urls = [LONAB_BASE] + LONAB_FALLBACKS
+        self.current_url_index = 0
         self.monitor   = None  # injecté par l'orchestrateur
+        logger.info(f"[LONAB] URLs configurées : {self.lonab_urls}")
 
     def set_monitor(self, monitor):
         self.monitor = monitor
@@ -45,6 +55,47 @@ class LonabAdapter:
         logger.info(f"[LONAB] {step}: {status} {message}".strip())
         if self.monitor:
             self.monitor.log(f"LONAB_{step}", status, message)
+
+    def _make_request(self, url: str, max_retries: int = None) -> Optional[requests.Response]:
+        """
+        Effectue une requête HTTP avec retry exponentiel.
+        """
+        if max_retries is None:
+            max_retries = RETRY_MAX
+
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+                if resp.status_code == 200:
+                    return resp
+                
+                logger.debug(f"LONAB request status {resp.status_code} pour {url}")
+                
+                # Attendre avant retry
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    logger.debug(f"Retry dans {delay}s...")
+                    time.sleep(delay)
+                    
+            except requests.Timeout:
+                self._log("TIMEOUT", f"Tentative {attempt + 1}/{max_retries}", url)
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+                    
+            except requests.ConnectionError as e:
+                self._log("CONNECTION_ERROR", f"Tentative {attempt + 1}/{max_retries}", str(e)[:60])
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+                    
+            except Exception as e:
+                logger.debug(f"Request error: {e}")
+                if attempt < max_retries - 1:
+                    delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+
+        return None
 
     # ──────────────────────────────────────────────────────────────
     # MÉTHODE PRINCIPALE
@@ -89,30 +140,30 @@ class LonabAdapter:
     # TENTATIVE 1 — SCRAPING HTML
     # ──────────────────────────────────────────────────────────────
     def _try_html_scraping(self, date_str: str) -> Optional[Course]:
-        """Scrape la page programme de lonab.bf"""
-        try:
-            urls_to_try = [
-                f"{self.lonab_url}/programme",
-                f"{self.lonab_url}/programme-du-jour",
-                f"{self.lonab_url}",
-            ]
+        """Scrape la page programme de lonab.bf avec fallbacks"""
+        for base_url in self.lonab_urls:
+            try:
+                urls_to_try = [
+                    f"{base_url}/programme",
+                    f"{base_url}/programme-du-jour",
+                    f"{base_url}",
+                ]
 
-            for url in urls_to_try:
-                try:
-                    resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-                    if resp.status_code != 200:
+                for url in urls_to_try:
+                    try:
+                        resp = self._make_request(url, max_retries=2)
+                        if resp:
+                            soup = BeautifulSoup(resp.text, "lxml")
+                            course = self._parse_lonab_html(soup, date_str)
+                            if course:
+                                return course
+
+                    except requests.RequestException:
                         continue
 
-                    soup = BeautifulSoup(resp.text, "lxml")
-                    course = self._parse_lonab_html(soup, date_str)
-                    if course:
-                        return course
-
-                except requests.RequestException:
-                    continue
-
-        except Exception as e:
-            self._log("HTML", "FAIL", str(e)[:100])
+            except Exception as e:
+                self._log("HTML", "FAIL", str(e)[:100])
+                continue
 
         return None
 
@@ -210,31 +261,29 @@ class LonabAdapter:
     # TENTATIVE 2 — PDF PDFPLUMBER
     # ──────────────────────────────────────────────────────────────
     def _try_pdf_plumber(self, date_str: str) -> Optional[Course]:
-        """Télécharge et parse le PDF du journal hippique LONAB."""
-        try:
-            pdf_urls = [
-                f"{self.lonab_url}/programme/{date_str}.pdf",
-                f"{self.lonab_url}/journal/{date_str}.pdf",
-                f"{self.lonab_url}/programme.pdf",
-            ]
+        """Télécharge et parse le PDF du journal hippique LONAB avec fallbacks."""
+        for base_url in self.lonab_urls:
+            try:
+                pdf_urls = [
+                    f"{base_url}/programme/{date_str}.pdf",
+                    f"{base_url}/journal/{date_str}.pdf",
+                    f"{base_url}/programme.pdf",
+                ]
 
-            for pdf_url in pdf_urls:
-                try:
-                    resp = requests.get(pdf_url, headers=HEADERS, timeout=TIMEOUT)
-                    if resp.status_code != 200:
+                for pdf_url in pdf_urls:
+                    try:
+                        resp = self._make_request(pdf_url, max_retries=2)
+                        if resp and "application/pdf" in resp.headers.get("Content-Type", ""):
+                            course = self._parse_pdf_content(resp.content, date_str)
+                            if course:
+                                return course
+
+                    except requests.RequestException:
                         continue
-                    if "application/pdf" not in resp.headers.get("Content-Type", ""):
-                        continue
 
-                    course = self._parse_pdf_content(resp.content, date_str)
-                    if course:
-                        return course
-
-                except requests.RequestException:
-                    continue
-
-        except Exception as e:
-            self._log("PDF_PLUMBER", "FAIL", str(e)[:100])
+            except Exception as e:
+                self._log("PDF_PLUMBER", "FAIL", str(e)[:100])
+                continue
 
         return None
 
@@ -337,40 +386,48 @@ class LonabAdapter:
                 self._log("GEMINI_VISION", "SKIP", "Quota épuisé")
                 return None
 
-            # Télécharger le PDF
-            pdf_url = f"{self.lonab_url}/programme.pdf"
-            resp = requests.get(pdf_url, headers=HEADERS, timeout=TIMEOUT)
-            if resp.status_code != 200:
-                return None
+            # Télécharger le PDF depuis le premier URL disponible
+            for base_url in self.lonab_urls:
+                try:
+                    pdf_url = f"{base_url}/programme.pdf"
+                    resp = self._make_request(pdf_url, max_retries=2)
+                    if not resp:
+                        continue
 
-            import base64
-            pdf_b64 = base64.b64encode(resp.content).decode("utf-8")
+                    import base64
+                    pdf_b64 = base64.b64encode(resp.content).decode("utf-8")
 
-            prompt = self._build_vision_prompt(date_str)
+                    prompt = self._build_vision_prompt(date_str)
 
-            # Appel Gemini Vision avec le PDF en base64
-            import google.generativeai as genai
-            key = quota_manager.keys[quota_manager.current]["value"]
-            genai.configure(api_key=key)
+                    # Appel Gemini Vision avec le PDF en base64
+                    import google.generativeai as genai
+                    key = quota_manager.keys[quota_manager.current]["value"]
+                    genai.configure(api_key=key)
 
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content([
-                {"mime_type": "application/pdf", "data": pdf_b64},
-                prompt
-            ])
+                    model = genai.GenerativeModel("gemini-1.5-flash")
+                    response = model.generate_content([
+                        {"mime_type": "application/pdf", "data": pdf_b64},
+                        prompt
+                    ])
 
-            quota_manager.keys[quota_manager.current]["calls"] += 1
-            self._log("GEMINI_VISION", "APPEL_EFFECTUE", "1 token utilisé")
+                    quota_manager.keys[quota_manager.current]["calls"] += 1
+                    self._log("GEMINI_VISION", "APPEL_EFFECTUE", "1 token utilisé")
 
-            result = safe_json_loads(response.text)
-            if not result:
-                return None
+                    result = safe_json_loads(response.text)
+                    if not result:
+                        continue
 
-            return self._build_course_from_gemini(result, date_str)
+                    course = self._build_course_from_gemini(result, date_str)
+                    if course:
+                        return course
+
+                except requests.RequestException:
+                    continue
 
         except Exception as e:
             self._log("GEMINI_VISION", "FAIL", str(e)[:100])
-            return None
+
+        return None
 
     def _build_vision_prompt(self, date_str: str) -> str:
         from utils.config import config

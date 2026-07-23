@@ -3,6 +3,7 @@ HYPERION V9 — Firebase Manager
 CRUD complet sur les 6 collections Firestore.
 Fallback JSON local si Firebase est KO.
 """
+import base64
 import json
 import os
 from typing import Optional, Dict, List
@@ -12,6 +13,10 @@ from utils.helpers import today_str, now_iso, generate_doc_id
 logger = get_logger(__name__)
 
 BACKUP_DIR = "./backup"
+
+# Champs obligatoires d'un service account Firebase valide, utilisés pour
+# donner un diagnostic clair au lieu du message générique du SDK.
+REQUIRED_SA_FIELDS = ["type", "project_id", "private_key", "client_email"]
 
 
 class FirebaseManager:
@@ -24,6 +29,80 @@ class FirebaseManager:
         self._db    = None
         self._ready = False
 
+    def _load_credentials_dict(self) -> Optional[dict]:
+        """
+        Charge et valide FIREBASE_CREDENTIALS.
+
+        Accepte deux formats :
+          1. Le JSON du service account tel quel (comportement d'origine).
+          2. Le même JSON encodé en base64 (recommandé pour GitHub Actions :
+             évite que les retours à la ligne du champ "private_key" soient
+             corrompus lors de la saisie/copie du secret).
+
+        Le message d'erreur "Certificate must contain a 'type' field..."
+        du run précédent indique que json.loads() a réussi à parser un
+        dict, mais qu'il lui manque les clés attendues d'un service
+        account — typiquement un JSON tronqué ou mal collé dans le secret
+        GitHub. Cette fonction le détecte explicitement au lieu de laisser
+        le SDK Firebase lever une erreur peu informative.
+        """
+        raw = os.getenv("FIREBASE_CREDENTIALS")
+        if not raw:
+            logger.warning("[FIREBASE] FIREBASE_CREDENTIALS non configuré")
+            return None
+
+        raw = raw.strip()
+        # Un secret parfois collé avec des guillemets englobants en trop
+        if raw.startswith("'") and raw.endswith("'"):
+            raw = raw[1:-1].strip()
+        if raw.startswith('"') and raw.endswith('"') and raw.count('"') == 2:
+            raw = raw[1:-1].strip()
+
+        cred_dict = None
+
+        # Tentative 1 : JSON direct
+        try:
+            cred_dict = json.loads(raw)
+        except json.JSONDecodeError:
+            cred_dict = None
+
+        # Tentative 2 : base64(JSON) — recommandé pour éviter les soucis de
+        # multi-lignes dans les secrets GitHub Actions
+        if cred_dict is None:
+            try:
+                decoded = base64.b64decode(raw).decode("utf-8")
+                cred_dict = json.loads(decoded)
+                logger.info("[FIREBASE] Secret décodé depuis base64")
+            except Exception:
+                cred_dict = None
+
+        if cred_dict is None:
+            logger.error(
+                "[FIREBASE] FIREBASE_CREDENTIALS n'est ni un JSON valide ni un "
+                "base64(JSON) valide — vérifier le contenu du secret GitHub."
+            )
+            return None
+
+        if not isinstance(cred_dict, dict):
+            logger.error(
+                f"[FIREBASE] FIREBASE_CREDENTIALS décodé en {type(cred_dict).__name__}, "
+                f"pas en objet JSON — secret probablement double-encodé."
+            )
+            return None
+
+        missing = [f for f in REQUIRED_SA_FIELDS if f not in cred_dict]
+        if missing:
+            present = list(cred_dict.keys())
+            logger.error(
+                f"[FIREBASE] Champs manquants dans le service account : {missing}. "
+                f"Champs présents : {present}. Le secret est probablement tronqué "
+                f"ou incomplet — recopier le fichier JSON complet téléchargé "
+                f"depuis la console Firebase (idéalement encodé en base64)."
+            )
+            return None
+
+        return cred_dict
+
     def _init(self):
         """Initialise Firebase (lazy — une seule fois)."""
         if self._ready:
@@ -32,15 +111,13 @@ class FirebaseManager:
             import firebase_admin
             from firebase_admin import credentials, firestore
 
-            # Credentials depuis variable d'environnement (JSON string)
-            cred_json = os.getenv("FIREBASE_CREDENTIALS")
-            if not cred_json:
-                logger.warning("[FIREBASE] FIREBASE_CREDENTIALS non configuré")
+            cred_dict = self._load_credentials_dict()
+            if cred_dict is None:
                 return False
 
             # Éviter la double initialisation
             if not firebase_admin._apps:
-                cred = credentials.Certificate(json.loads(cred_json))
+                cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
 
             self._db    = firestore.client()

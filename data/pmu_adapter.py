@@ -19,10 +19,17 @@ from utils.validators import filter_valid_runners, parse_forme
 
 logger = get_logger(__name__)
 
+# En-têtes "navigateur mobile" : l'ancien User-Agent desktop générique est
+# plus facilement identifié/bloqué comme trafic de bot que celui d'un
+# navigateur mobile réel.
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"
+    ),
     "Accept-Language": "fr-FR,fr;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    "Referer": "https://www.pmu.fr/turf/",
 }
 TIMEOUT  = config.sources.get("pmu", {}).get("timeout_seconds", 20)
 DELAY    = config.sources.get("scraping", {}).get("delay_between_requests", 1.5)
@@ -31,14 +38,22 @@ RETRY_DELAYS = config.sources.get("scraping", {}).get("retry_delays", [2, 5, 10]
 PMU_BASE = config.sources.get("pmu", {}).get("url", "https://www.pmu.fr")
 PMU_FALLBACKS = config.sources.get("pmu", {}).get("fallback_urls", [])
 
+# API JSON non officielle mais publique et documentée depuis des années
+# (utilisée par de nombreux outils tiers), en dernier recours quand
+# pmu.fr lui-même est inaccessible depuis l'IP du runner GitHub Actions.
+# Le numéro de "client" dans l'URL a bougé au fil du temps (1, 7, 61...) ;
+# si celui-ci cesse de fonctionner, il faut le retester manuellement.
+OFFLINE_API_BASE = "https://offline.turfinfo.api.pmu.fr/rest/client/61"
+
 
 class PMUAdapter:
     """
     Scrape PMU.fr pour obtenir :
     1. Le programme complet du jour (liste des courses)
     2. Les partants + cotes d'une course spécifique
-    
-    Implémente une cascade de fallback URLs en cas d'indisponibilité.
+
+    Implémente une cascade de fallback URLs en cas d'indisponibilité,
+    plus une API JSON non-officielle en tout dernier recours.
     """
 
     def __init__(self):
@@ -73,27 +88,27 @@ class PMUAdapter:
                 resp = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
                 if resp.status_code == 200:
                     return resp
-                
+
                 logger.debug(f"PMU request status {resp.status_code} pour {url}")
-                
+
                 # Attendre avant retry
                 if attempt < max_retries - 1:
                     delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
                     logger.debug(f"Retry dans {delay}s...")
                     time.sleep(delay)
-                    
+
             except requests.Timeout:
                 self._log("TIMEOUT", f"Tentative {attempt + 1}/{max_retries}", url)
                 if attempt < max_retries - 1:
                     delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
                     time.sleep(delay)
-                    
+
             except requests.ConnectionError as e:
                 self._log("CONNECTION_ERROR", f"Tentative {attempt + 1}/{max_retries}", str(e)[:60])
                 if attempt < max_retries - 1:
                     delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
                     time.sleep(delay)
-                    
+
             except Exception as e:
                 logger.debug(f"Request error: {e}")
                 if attempt < max_retries - 1:
@@ -109,7 +124,7 @@ class PMUAdapter:
         """
         Récupère toutes les courses disponibles sur PMU.fr pour la date donnée.
         Retourne une liste de Course (sans partants détaillés — juste l'index).
-        Implémente cascades de fallback URLs.
+        Implémente cascades de fallback URLs, puis l'API JSON publique.
         """
         if date_str is None:
             date_str = today_str()
@@ -138,11 +153,18 @@ class PMUAdapter:
                     self._log("PROGRAMME", "RETRY", str(e)[:60])
                     continue
 
-        # Fallback : API JSON PMU (souvent disponible)
+        # Fallback 1 : API JSON PMU "interne" (souvent hébergée sous pmu.fr même)
         for base_url in self.base_urls:
             courses = self._try_pmu_api(date_str, base_url)
             if courses:
                 return courses
+
+        # Fallback 2 : API JSON publique offline.turfinfo.api.pmu.fr
+        # (domaine différent de pmu.fr — utile si c'est pmu.fr précisément
+        # qui est bloqué pour l'IP du runner, pas le reste d'internet)
+        courses = self._try_offline_api(date_str)
+        if courses:
+            return courses
 
         self._log("PROGRAMME", "FAIL", "PMU.fr et tous les fallbacks inaccessibles")
         return []
@@ -217,10 +239,10 @@ class PMUAdapter:
         )
 
     def _try_pmu_api(self, date_str: str, base_url: str = None) -> List[Course]:
-        """Essaie l'API JSON non-officielle de PMU.fr"""
+        """Essaie l'API JSON non-officielle hébergée sous pmu.fr"""
         if base_url is None:
             base_url = self.base_urls[0]
-            
+
         try:
             # PMU expose parfois des données JSON
             date_pmu = date_str.replace("-", "")
@@ -231,32 +253,58 @@ class PMUAdapter:
                 return []
 
             data = resp.json()
-            courses = []
-
-            reunions = data.get("programme", {}).get("reunions", [])
-            for reunion in reunions:
-                hippodrome = reunion.get("hippodrome", {}).get("libelleLong", "")
-                for course_data in reunion.get("courses", []):
-                    course_id = f"R{reunion.get('numOrdre', 1)}C{course_data.get('numOrdre', 1)}"
-                    courses.append(Course(
-                        course_id   = course_id,
-                        nom         = course_data.get("libelle", f"Course {course_id}"),
-                        date        = date_str,
-                        heure       = course_data.get("heureDepart", ""),
-                        hippodrome  = hippodrome,
-                        distance    = course_data.get("distance"),
-                        type_course = course_data.get("discipline", {}).get("libelle"),
-                        partants    = [],
-                        source      = "PMU_API_JSON"
-                    ))
-
-            if courses:
-                self._log("API_JSON", "OK", f"{len(courses)} courses via API ({base_url})")
-            return courses
+            return self._parse_offline_program_json(data, date_str, source="PMU_API_JSON")
 
         except Exception as e:
             logger.debug(f"PMU API JSON failed: {e}")
             return []
+
+    def _try_offline_api(self, date_str: str) -> List[Course]:
+        """
+        Essaie l'API JSON publique offline.turfinfo.api.pmu.fr, hébergée
+        sur un domaine différent de pmu.fr. Format de date attendu : DDMMYYYY.
+        """
+        try:
+            year, month, day = date_str.split("-")
+            date_pmu = f"{day}{month}{year}"  # DDMMYYYY
+            url = f"{OFFLINE_API_BASE}/programme/{date_pmu}"
+
+            resp = self._make_request(url, max_retries=2)
+            if not resp:
+                self._log("OFFLINE_API", "FAIL", "offline.turfinfo.api.pmu.fr inaccessible")
+                return []
+
+            data = resp.json()
+            courses = self._parse_offline_program_json(data, date_str, source="PMU_OFFLINE_API")
+            if courses:
+                self._log("OFFLINE_API", "OK", f"{len(courses)} courses via offline.turfinfo.api.pmu.fr")
+            return courses
+
+        except Exception as e:
+            self._log("OFFLINE_API", "FAIL", str(e)[:100])
+            return []
+
+    def _parse_offline_program_json(self, data: dict, date_str: str, source: str) -> List[Course]:
+        """Parse commun pour les deux variantes de l'API JSON PMU (même structure)."""
+        courses = []
+        reunions = data.get("programme", {}).get("reunions", [])
+        for reunion in reunions:
+            hippodrome = reunion.get("hippodrome", {}).get("libelleLong", "")
+            for course_data in reunion.get("courses", []):
+                course_id = f"R{reunion.get('numOrdre', 1)}C{course_data.get('numOrdre', 1)}"
+                courses.append(Course(
+                    course_id   = course_id,
+                    nom         = course_data.get("libelle", f"Course {course_id}"),
+                    date        = date_str,
+                    heure       = course_data.get("heureDepart", ""),
+                    hippodrome  = hippodrome,
+                    distance    = course_data.get("distance"),
+                    type_course = course_data.get("discipline", {}).get("libelle"),
+                    partants    = [],
+                    source      = source
+                ))
+
+        return courses
 
     # ──────────────────────────────────────────────────────────────
     # PARTANTS D'UNE COURSE SPÉCIFIQUE
@@ -276,10 +324,16 @@ class PMUAdapter:
             self._log("RUNNERS", "OK", f"{course.course_id}: {len(runners)} partants")
             return runners
 
-        # Méthode 2 : API JSON partants
+        # Méthode 2 : API JSON partants (pmu.fr)
         runners = self._fetch_runners_api(course)
         if runners:
             self._log("RUNNERS_API", "OK", f"{course.course_id}: {len(runners)} partants")
+            return runners
+
+        # Méthode 3 : API JSON publique offline.turfinfo.api.pmu.fr
+        runners = self._fetch_runners_offline_api(course)
+        if runners:
+            self._log("RUNNERS_OFFLINE_API", "OK", f"{course.course_id}: {len(runners)} partants")
             return runners
 
         self._log("RUNNERS", "FAIL", f"{course.course_id}: aucun partant trouvé")
@@ -384,10 +438,9 @@ class PMUAdapter:
         return runners
 
     def _fetch_runners_api(self, course: Course) -> List[Runner]:
-        """Essaie l'API JSON PMU pour les partants avec fallbacks."""
+        """Essaie l'API JSON PMU (hébergée sous pmu.fr) pour les partants."""
         try:
             date_pmu = course.date.replace("-", "")
-            # Extraire R et C depuis course_id
             rc_match = re.search(r"R(\d+)C(\d+)", course.course_id)
             if not rc_match:
                 return []
@@ -403,31 +456,7 @@ class PMUAdapter:
                     continue
 
                 data = resp.json()
-                runners = []
-
-                for partant in data.get("partants", []):
-                    cheval = partant.get("cheval", {})
-                    try:
-                        forme_brute = cheval.get("formeDetail", "")
-                        runner = Runner(
-                            numero          = int(partant.get("numPmu", 0)),
-                            nom             = cheval.get("nom", "").upper().strip(),
-                            age             = cheval.get("age"),
-                            sexe            = cheval.get("sexe"),
-                            poids           = float(partant.get("poidsJockey", 58.0)),
-                            corde           = partant.get("placeCorde"),
-                            forme_brute     = forme_brute,
-                            forme_parsed    = parse_forme(forme_brute),
-                            gains_totaux    = cheval.get("gainsCarriere"),
-                            jockey          = partant.get("jockey", {}).get("nom"),
-                            entraineur      = partant.get("entraineur", {}).get("nom"),
-                            cote_officielle = float(partant.get("cotePmu", 0.0)),
-                            source          = "PMU_API_JSON"
-                        )
-                        runners.append(runner)
-                    except Exception:
-                        continue
-
+                runners = self._parse_offline_runners_json(data)
                 if runners:
                     return runners
 
@@ -435,6 +464,63 @@ class PMUAdapter:
             logger.debug(f"PMU runners API error: {e}")
 
         return []
+
+    def _fetch_runners_offline_api(self, course: Course) -> List[Runner]:
+        """
+        Essaie l'API JSON publique offline.turfinfo.api.pmu.fr pour les
+        partants — dernier recours, domaine différent de pmu.fr.
+        """
+        try:
+            rc_match = re.search(r"R(\d+)C(\d+)", course.course_id)
+            if not rc_match:
+                return []
+
+            r_num = rc_match.group(1)
+            c_num = rc_match.group(2)
+
+            year, month, day = course.date.split("-")
+            date_pmu = f"{day}{month}{year}"  # DDMMYYYY
+
+            url = f"{OFFLINE_API_BASE}/programme/{date_pmu}/R{r_num}/C{c_num}/participants"
+            resp = self._make_request(url, max_retries=2)
+            if not resp:
+                return []
+
+            data = resp.json()
+            return self._parse_offline_runners_json(data)
+
+        except Exception as e:
+            logger.debug(f"PMU offline API runners error: {e}")
+            return []
+
+    def _parse_offline_runners_json(self, data: dict) -> List[Runner]:
+        """Parse commun pour les réponses JSON 'participants' (mêmes clés sur les deux APIs)."""
+        runners = []
+        for partant in data.get("participants", data.get("partants", [])):
+            cheval = partant.get("cheval", partant)
+            try:
+                forme_brute = cheval.get("formeDetail", "")
+                runner = Runner(
+                    numero          = int(partant.get("numPmu", 0)),
+                    nom             = str(cheval.get("nom", partant.get("nom", ""))).upper().strip(),
+                    age             = cheval.get("age"),
+                    sexe            = cheval.get("sexe"),
+                    poids           = float(partant.get("poidsJockey", 58.0)),
+                    corde           = partant.get("placeCorde"),
+                    forme_brute     = forme_brute,
+                    forme_parsed    = parse_forme(forme_brute) if forme_brute else [],
+                    gains_totaux    = cheval.get("gainsCarriere"),
+                    jockey          = (partant.get("jockey") or {}).get("nom"),
+                    entraineur      = (partant.get("entraineur") or {}).get("nom"),
+                    cote_officielle = float(partant.get("cotePmu", partant.get("dernierRapportDirect", {}).get("rapport", 0.0))
+                                            if isinstance(partant.get("dernierRapportDirect"), dict) else partant.get("cotePmu", 0.0)),
+                    source          = "PMU_API_JSON"
+                )
+                runners.append(runner)
+            except Exception:
+                continue
+
+        return runners
 
     # ──────────────────────────────────────────────────────────────
     # SÉLECTION DES 10 COURSES DU JOUR

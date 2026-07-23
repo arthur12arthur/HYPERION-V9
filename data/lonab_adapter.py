@@ -2,7 +2,7 @@
 HYPERION V9 — LONAB Adapter (Agent B - Étape 1)
 Identifie la course LONAB du jour via :
   1. Téléchargement + extraction PDF (lonab_scraper)
-  2. Extraction via Gemini Vision
+  2. Extraction via Gemini Vision (fallback)
   3. Fallback : course PMU de remplacement
 
 Utilise le scraper V7 éprouvé pour récupérer le PDF LONAB
@@ -89,9 +89,9 @@ class LonabAdapter:
         self._log("ALL_METHODS", "FAILED", "LONAB inaccessible — fallback PMU requis")
         if self.monitor:
             self.monitor.alert_telegram(
-                f"⚠️ LONAB inaccessible ce matin \\({date_str}\\)\n"
-                f"Course officielle LONAB non identifiée\\.\n"
-                f"Remplacée par une course PMU\\."
+                f"⚠️ LONAB inaccessible ce matin ({date_str})\n"
+                f"Course officielle LONAB non identifiée.\n"
+                f"Remplacée par une course PMU."
             )
         return None, "FAILED"
 
@@ -185,7 +185,7 @@ class LonabAdapter:
         Parse du texte brut (PDF) pour extraire une course.
         Patterns génériques adaptés aux journaux hippiques.
 
-        Cascade de 3 patterns, du plus strict au plus permissif, car la
+        Cascade de 5 patterns, du plus strict au plus permissif, car la
         mise en page LONAB diffère entre réunions locales et réunions
         d'import (Vincennes, Cagnes, etc.).
         """
@@ -260,30 +260,48 @@ class LonabAdapter:
         """
         Essaie plusieurs patterns d'extraction, du plus strict au plus
         permissif. S'arrête au premier pattern qui trouve >= 3 partants.
+        
+        PATTERNS :
+          1. Strict : Numéro MAJUSCULES ... Cote décimale en fin
+          2. Loose : Casse mixte, tolérance cote
+          3. Colonnes : 2+ espaces sans cote
+          4. TAB : Séparation par tabulation (PDF spécial)
+          5. Multispace : 3+ espaces consécutifs (fallback)
         """
-        # Pattern 1 (original) : Numero Nom(MAJUSCULES) ... Cote décimale en fin de ligne
+        # Pattern 1 (strict) : Numero Nom(MAJUSCULES) ... Cote décimale en fin de ligne
         strict_pattern = re.compile(
             r"^(\d{1,2})\s+([A-Z][A-Z\s\'\-]{2,50}?)\s+.*?(\d+[\.,]\d+)\s*$"
         )
 
-        # Pattern 2 : plus tolérant sur la casse du nom et la position de la cote
-        # (utile pour les réunions d'import dont la mise en page diffère)
+        # Pattern 2 (loose) : plus tolérant sur la casse du nom et la position de la cote
         loose_pattern = re.compile(
             r"^(\d{1,2})\s{1,4}([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\'\-\.]{2,50}?)\s{2,}.*?(\d+[\.,]\d+)?\s*$"
         )
 
-        # Pattern 3 : découpage par colonnes larges (2+ espaces), sans exiger
-        # de cote — la cote sera enrichie plus tard via PMU si besoin.
-        column_pattern = re.compile(r"^(\d{1,2})\s{2,}([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\'\-\.]{2,50})")
+        # Pattern 3 (colonnes) : découpage par colonnes larges (2+ espaces)
+        column_pattern = re.compile(
+            r"^(\d{1,2})\s{2,}([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\'\-\.]{2,50})"
+        )
 
-        for pattern in (strict_pattern, loose_pattern, column_pattern):
+        # Pattern 4 (TAB) : séparation par tabulation
+        tab_pattern = re.compile(
+            r"^(\d{1,2})\t+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\'\-\.]{2,50})"
+        )
+
+        # Pattern 5 (multispace) : 3+ espaces consécutifs
+        multispace_pattern = re.compile(
+            r"^(\d{1,2})\s{3,}([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\'\-\.]{2,50})"
+        )
+
+        for pattern in (strict_pattern, loose_pattern, column_pattern, tab_pattern, multispace_pattern):
             runners = self._apply_runner_pattern(lines, pattern)
             if len(runners) >= 3:
+                logger.info(f"[LONAB] Pattern trouvé : {len(runners)} partants")
                 return runners
 
         # Aucun pattern n'a donné >= 3 : on retourne le meilleur essai quand même
-        # (permet au caller de logguer le nombre réel trouvé)
         best = self._apply_runner_pattern(lines, strict_pattern)
+        logger.warning(f"[LONAB] Aucun pattern ne donne >= 3. Meilleur essai : {len(best)} partants")
         return best
 
     def _apply_runner_pattern(self, lines: List[str], pattern: re.Pattern) -> List[Runner]:
@@ -328,10 +346,6 @@ class LonabAdapter:
     def _try_gemini_vision(self, target_date: datetime, date_str: str) -> Optional[Course]:
         """
         Utilise Gemini Vision comme dernier recours.
-
-        Migré vers le SDK `google-genai` (le SDK `google-generativeai` est
-        déprécié) et vers le modèle `gemini-2.0-flash` (gemini-1.5-flash
-        n'est plus servi par l'API v1beta — d'où le 404 dans le run précédent).
         """
         try:
             from utils.quota_manager import quota_manager
@@ -351,25 +365,16 @@ class LonabAdapter:
 
             prompt = self._build_vision_prompt(date_str)
 
-            # Nouveau SDK : google-genai
-            from google import genai
-            from google.genai import types
-
-            key = quota_manager.keys[quota_manager.current]["value"]
-            client = genai.Client(api_key=key)
-
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[
-                    types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-                    prompt,
-                ],
+            # Utiliser le quota manager
+            response_text = quota_manager.call_gemini(
+                prompt,
+                files=[{"data": pdf_bytes, "mime_type": "application/pdf"}]
             )
 
-            quota_manager.keys[quota_manager.current]["calls"] += 1
-            self._log("GEMINI_VISION", "APPEL_EFFECTUE", "1 token utilisé")
+            if not response_text:
+                return None
 
-            result = safe_json_loads(response.text)
+            result = safe_json_loads(response_text)
             if not result:
                 return None
 

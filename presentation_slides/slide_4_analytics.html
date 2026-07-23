@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1"></script>
+    <style>
+        body { margin: 0; }
+        .slide-container {
+            width: 1280px;
+            min-height: 720px;
+            background-color: #0B0E14;
+            color: #E0E6ED;
+            font-family: 'Inter', sans-serif;
+            position: relative;
+            overflow: hidden;
+            background-image: linear-gradient(135deg, #0B0E14 0%, #001A33 100%);
+        }
+        .header {
+            padding-top: 40px;
+            padding-left: 60px;
+            margin-bottom: 30px;
+        }
+        h2 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 48px;
+            color: #00F2FF;
+            text-transform: uppercase;
+            border-bottom: 2px solid #00F2FF;
+            display: inline-block;
+            padding-bottom: 10px;
+        }
+        .content-wrapper {
+            display: flex;
+            padding-left: 60px;
+            padding-right: 60px;
+            gap: 40px;
+        }
+        .text-section {
+            flex: 1;
+        }
+        .chart-section {
+            flex: 1;
+            background: rgba(0, 242, 255, 0.02);
+            border: 1px solid rgba(0, 242, 255, 0.1);
+            padding: 20px;
+        }
+        .feature-item {
+            margin-bottom: 25px;
+        }
+        .feature-item h3 {
+            color: #00F2FF;
+            font-size: 22px;
+            margin-bottom: 8px;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        .feature-item p {
+            font-size: 16px;
+            line-height: 1.5;
+            margin: 0;
+        }
+        .chart-container {
+            height: 400px;
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="header">
+            <h2>Moteur Analytique Avancé</h2>
+        </div>
+        <div class="content-wrapper">
+            <div class="text-section">
+                <div class="feature-item">
+                    <h3><i class="fas fa-dice"></i> Simulation Monte Carlo</h3>
+                    <p>50 000 simulations par course (10 000 x 5 variantes) pour capturer l'incertitude et générer des probabilités de victoire robustes.</p>
+                </div>
+                <div class="feature-item">
+                    <h3><i class="fas fa-layer-group"></i> Consensus de Borda</h3>
+                    <p>Agrégation mathématique des classements simulés pour identifier les chevaux les plus stables et performants.</p>
+                </div>
+                <div class="feature-item">
+                    <h3><i class="fas fa-check-circle"></i> Robustesse</h3>
+                    <p>Seuil de robustesse fixé à 80% pour garantir la fiabilité des prédictions avant diffusion.</p>
+                </div>
+            </div>
+            <div class="chart-section">
+                <h3 style="color: #00F2FF; font-family: 'Space Grotesk', sans-serif; margin-bottom: 20px; text-align: center;">Poids du Scoring (%)</h3>
+                <div class="chart-container">
+                    <canvas id="scoringChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const ctx = document.getElementById('scoringChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: ['Historique', 'Forme', 'Terrain', 'Handicap', 'Fraîcheur'],
+                datasets: [{
+                    label: 'Poids (%)',
+                    data: [35, 25, 20, 10, 10],
+                    backgroundColor: '#00F2FF',
+                    borderColor: '#00F2FF',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false }
+                },
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(224, 230, 237, 0.1)' },
+                        ticks: { color: '#E0E6ED' },
+                        max: 40
+                    },
+                    y: {
+                        grid: { display: false },
+                        ticks: { color: '#E0E6ED', font: { family: 'Inter', size: 14 } }
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>

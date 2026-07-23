@@ -1,0 +1,100 @@
+{
+  "project_info": {
+    "title": "HYPERION AI STUDIO V9.4",
+    "created": 1779106784.795,
+    "last_updated": 1779106946.848,
+    "total_slides": 8
+  },
+  "slides": [
+    {
+      "id": "slide_1_title",
+      "state": "edited",
+      "pageNum": 1
+    },
+    {
+      "id": "slide_2_vision",
+      "state": "edited",
+      "pageNum": 2
+    },
+    {
+      "id": "slide_3_architecture",
+      "state": "edited",
+      "pageNum": 3
+    },
+    {
+      "id": "slide_4_analytics",
+      "state": "edited",
+      "pageNum": 4
+    },
+    {
+      "id": "slide_5_hades",
+      "state": "edited",
+      "pageNum": 5
+    },
+    {
+      "id": "slide_6_gemini_rotation",
+      "state": "edited",
+      "pageNum": 6
+    },
+    {
+      "id": "slide_7_infrastructure",
+      "state": "edited",
+      "pageNum": 7
+    },
+    {
+      "id": "slide_8_conclusion",
+      "state": "edited",
+      "pageNum": 8
+    }
+  ],
+  "outline": [
+    {
+      "id": "slide_1_title",
+      "title": "HYPERION AI STUDIO V9.4",
+      "summary": "Introduction à la plateforme d'analyse hippique par intelligence artificielle.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_2_vision",
+      "title": "Vision Stratégique",
+      "summary": "Présentation du marché cible (LONAB/PMU) et de l'approche automatisée.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_3_architecture",
+      "title": "Architecture des 9 Agents",
+      "summary": "Détail du système multi-agents, de l'orchestration à l'auto-évaluation.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_4_analytics",
+      "title": "Moteur Analytique Avancé",
+      "summary": "Explication du scoring multicritère et de la simulation Monte Carlo.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_5_hades",
+      "title": "Système HADES (Gestion des Risques)",
+      "summary": "Présentation du Hazard Detection & Evaluation System et du mode test.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_6_gemini_rotation",
+      "title": "Innovation : Rotation des Clés Gemini",
+      "summary": "Gestion de la disponibilité et optimisation des coûts API.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_7_infrastructure",
+      "title": "Pipeline & Infrastructure",
+      "summary": "Technologies utilisées : GitHub Actions, Firebase et Telegram.",
+      "image_plan": "Use a suitable image if needed"
+    },
+    {
+      "id": "slide_8_conclusion",
+      "title": "Métriques de Succès & Conclusion",
+      "summary": "Objectifs de performance et disclaimer légal.",
+      "image_plan": "Use a suitable image if needed"
+    }
+  ]
+}

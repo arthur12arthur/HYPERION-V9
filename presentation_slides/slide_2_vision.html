@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <style>
+        body { margin: 0; }
+        .slide-container {
+            width: 1280px;
+            min-height: 680px;
+            background-color: #0B0E14;
+            color: #E0E6ED;
+            font-family: 'Inter', sans-serif;
+            position: relative;
+            overflow: hidden;
+            background-image: linear-gradient(180deg, #0B0E14 0%, #001A33 100%);
+        }
+        .header {
+            padding-top: 40px; /* keep upper padding */
+            padding-left: 60px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 48px;
+            color: #00F2FF;
+            text-transform: uppercase;
+            border-bottom: 2px solid #00F2FF;
+            display: inline-block;
+            padding-bottom: 10px;
+        }
+        .main-content {
+            display: flex;
+            padding-left: 60px;
+            padding-right: 60px;
+            gap: 30px;
+        }
+        .left-column { flex: 1; }
+        .right-column {
+            flex: 1;
+            background: rgba(0, 242, 255, 0.05);
+            border: 1px solid rgba(0, 242, 255, 0.2);
+            padding: 18px;
+        }
+        .point { margin-bottom: 18px; }
+        .point h3 {
+            color: #00F2FF;
+            font-size: 24px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .point p {
+            font-size: 18px;
+            line-height: 1.6;
+            margin: 0;
+        }
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th {
+            text-align: left;
+            color: #00F2FF;
+            border-bottom: 1px solid #00F2FF;
+            padding: 10px;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid rgba(224, 230, 237, 0.1);
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="header">
+            <h2>Vision Stratégique</h2>
+        </div>
+        <div class="main-content">
+            <div class="left-column">
+                <div class="point">
+                    <h3><i class="fas fa-bullseye"></i> Objectif Stratégique</h3>
+                    <p>Transformer les données hippiques brutes en prédictions probabilistes via une automatisation complète.</p>
+                </div>
+                <div class="point">
+                    <h3><i class="fas fa-robot"></i> Approche Agentique</h3>
+                    <p>Architecture de 9 agents spécialisés travaillant en synergie pour une analyse fiable.</p>
+                </div>
+            </div>
+            <div class="right-column">
+                <h3 style="color: #00F2FF; margin-bottom: 12px;">Cibles & Marchés</h3>
+                <table>
+                    <tr>
+                        <th>Marché</th>
+                        <th>Rôle HYPERION</th>
+                    </tr>
+                    <tr>
+                        <td>LONAB (Burkina Faso)</td>
+                        <td>Analyse quotidienne de la course officielle.</td>
+                    </tr>
+                    <tr>
+                        <td>PMU (France)</td>
+                        <td>Couverture complète du programme (10 courses/jour).</td>
+                    </tr>
+                    <tr>
+                        <td>Données</td>
+                        <td>Scraping multi-sources (Paris-Turf, Equidia).</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

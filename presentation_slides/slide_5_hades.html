@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <style>
+        body { margin: 0; }
+        .slide-container {
+            width: 1280px;
+            min-height: 720px;
+            background-color: #0B0E14;
+            color: #E0E6ED;
+            font-family: 'Inter', sans-serif;
+            position: relative;
+            overflow: hidden;
+            background-image: linear-gradient(135deg, #0B0E14 0%, #1A0000 100%);
+        }
+        .header {
+            padding-top: 40px;
+            padding-left: 60px;
+            margin-bottom: 30px;
+        }
+        h2 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 48px;
+            color: #FF4D4D; /* Red accent for risk */
+            text-transform: uppercase;
+            border-bottom: 2px solid #FF4D4D;
+            display: inline-block;
+            padding-bottom: 10px;
+        }
+        .main-content {
+            display: flex;
+            padding-left: 60px;
+            padding-right: 60px;
+            gap: 40px;
+        }
+        .info-box {
+            flex: 1;
+            background: rgba(255, 77, 77, 0.05);
+            border: 1px solid rgba(255, 77, 77, 0.2);
+            padding: 25px;
+        }
+        .info-box h3 {
+            color: #FF4D4D;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 28px;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .info-box p {
+            font-size: 18px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+        .mode-comparison {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            width: 100%;
+        }
+        .mode-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 20px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(255, 77, 77, 0.1);
+        }
+        .mode-icon {
+            font-size: 24px;
+            color: #FF4D4D;
+            padding-top: 5px;
+        }
+        .mode-text h4 {
+            font-size: 20px;
+            color: #E0E6ED;
+            margin-bottom: 5px;
+        }
+        .mode-text p {
+            font-size: 16px;
+            margin: 0;
+            color: #A0AEC0;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="header">
+            <h2>Système HADES (Gestion des Risques)</h2>
+        </div>
+        <div class="main-content">
+            <div class="info-box">
+                <h3><i class="fas fa-shield-alt"></i> Hazard Detection</h3>
+                <p>Le <strong>Hazard Detection & Evaluation System</strong> est le gardien du capital. Il analyse les anomalies statistiques et les divergences entre les agents pour prévenir les pertes.</p>
+                <div class="mode-comparison">
+                    <div class="mode-item">
+                        <div class="mode-icon"><i class="fas fa-vial"></i></div>
+                        <div class="mode-text">
+                            <h4>Phase 1 : Mode Test (J1-J30)</h4>
+                            <p>Analyse passive et logging des anomalies. Aucune restriction sur les prédictions pour calibrer les seuils d'alerte.</p>
+                        </div>
+                    </div>
+                    <div class="mode-item">
+                        <div class="mode-icon"><i class="fas fa-lock"></i></div>
+                        <div class="mode-text">
+                            <h4>Phase 2 : Mode Production</h4>
+                            <p>Blocage automatique des recommandations de mise en cas de risque élevé ou de divergence forte du consensus.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div style="flex: 0.4; display: flex; align-items: center; justify-content: center;">
+                <div style="text-align: center; border: 2px dashed #FF4D4D; padding: 40px; background: rgba(255, 77, 77, 0.02);">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 80px; color: #FF4D4D; margin-bottom: 20px;"></i>
+                    <p style="font-family: 'Space Grotesk', sans-serif; font-size: 24px; color: #FF4D4D;">SÉCURITÉ<br>AVANT TOUT</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

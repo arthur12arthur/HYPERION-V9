@@ -1,0 +1,14 @@
+weights:
+  score_historique: 0.35
+  score_forme: 0.25
+  score_terrain: 0.20
+  score_handicap: 0.10
+  score_fraicheur: 0.10
+
+monte_carlo:
+  simulations: 10000
+  variantes: 5
+  sigma_noise: 0.15
+
+consensus:
+  borda_threshold: 0.80

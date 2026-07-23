@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <style>
+        body { margin: 0; }
+        .slide-container {
+            width: 1280px;
+            min-height: 720px;
+            background-color: #0B0E14;
+            color: #E0E6ED;
+            font-family: 'Inter', sans-serif;
+            position: relative;
+            overflow: hidden;
+            background-image: radial-gradient(circle at 0% 0%, #001A33 0%, #0B0E14 100%);
+        }
+        .header {
+            padding-top: 40px;
+            padding-left: 60px;
+            margin-bottom: 20px;
+        }
+        h2 {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 48px;
+            color: #00F2FF;
+            text-transform: uppercase;
+            border-bottom: 2px solid #00F2FF;
+            display: inline-block;
+            padding-bottom: 10px;
+        }
+        .agent-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-auto-rows: auto;
+            gap: 12px;
+            padding-left: 60px;
+            padding-right: 60px;
+        }
+        .agent-card {
+            background: rgba(0, 242, 255, 0.03);
+            border: 1px solid rgba(0, 242, 255, 0.1);
+            padding: 10px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+        .agent-card i {
+            font-size: 28px;
+            color: #00F2FF;
+            margin-bottom: 8px;
+        }
+        .agent-card h3 {
+            font-size: 18px;
+            color: #00F2FF;
+            margin-bottom: 4px;
+            font-family: 'Space Grotesk', sans-serif;
+        }
+        .agent-card p {
+            font-size: 14px;
+            line-height: 1.3;
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="slide-container">
+        <div class="header">
+            <h2>Architecture des 9 Agents</h2>
+        </div>
+        <div class="agent-grid">
+            <div class="agent-card">
+                <i class="fas fa-user-tie"></i>
+                <h3>Agent A : Orchestrateur</h3>
+                <p>Gestionnaire central du flux de travail et des priorités.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-file-download"></i>
+                <h3>Agent B : Extraction</h3>
+                <p>Cascade intelligente : HTML → PDF → Gemini Vision.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-database"></i>
+                <h3>Agent C : Enrichissement</h3>
+                <p>Collecte des données externes multi-sources.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-calculator"></i>
+                <h3>Agent D : Analytique</h3>
+                <p>Moteur de calcul, Monte Carlo et consensus Borda.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-code-merge"></i>
+                <h3>Agent E : Fusion</h3>
+                <p>Méta-fusion des prédictions internes et externes.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-shield-virus"></i>
+                <h3>Agent F : Risque</h3>
+                <p>Gestionnaire HADES et calcul EV/Kelly.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-file-alt"></i>
+                <h3>Agent G : Reporting</h3>
+                <p>Génération des rapports narratifs et techniques.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-check-double"></i>
+                <h3>Agent H : Évaluation</h3>
+                <p>Analyse des résultats réels et scoring J/30.</p>
+            </div>
+            <div class="agent-card">
+                <i class="fas fa-heartbeat"></i>
+                <h3>Agent I : Monitoring</h3>
+                <p>Surveillance de la santé du pipeline et alertes.</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -41,9 +41,12 @@ PMU_FALLBACKS = config.sources.get("pmu", {}).get("fallback_urls", [])
 # API JSON non officielle mais publique et documentée depuis des années
 # (utilisée par de nombreux outils tiers), en dernier recours quand
 # pmu.fr lui-même est inaccessible depuis l'IP du runner GitHub Actions.
-# Le numéro de "client" dans l'URL a bougé au fil du temps (1, 7, 61...) ;
-# si celui-ci cesse de fonctionner, il faut le retester manuellement.
-OFFLINE_API_BASE = "https://offline.turfinfo.api.pmu.fr/rest/client/61"
+# Le numéro de "client" dans l'URL a bougé au fil du temps (1, 7, 61...) et
+# une version invalide répond parfois par un 200 contenant un message
+# d'erreur JSON (une simple chaîne) plutôt qu'un objet — d'où la validation
+# de type stricte plus bas. On essaie plusieurs versions en cascade.
+OFFLINE_API_CLIENT_VERSIONS = ["61", "7", "1", "3"]
+OFFLINE_API_HOST = "https://offline.turfinfo.api.pmu.fr/rest/client"
 
 
 class PMUAdapter:
@@ -263,34 +266,58 @@ class PMUAdapter:
         """
         Essaie l'API JSON publique offline.turfinfo.api.pmu.fr, hébergée
         sur un domaine différent de pmu.fr. Format de date attendu : DDMMYYYY.
+        Teste plusieurs versions de "client" dans l'URL, car une version
+        invalide répond parfois 200 avec un simple message d'erreur JSON
+        (une chaîne, pas un objet) plutôt qu'une vraie 4xx.
         """
-        try:
-            year, month, day = date_str.split("-")
-            date_pmu = f"{day}{month}{year}"  # DDMMYYYY
-            url = f"{OFFLINE_API_BASE}/programme/{date_pmu}"
+        year, month, day = date_str.split("-")
+        date_pmu = f"{day}{month}{year}"  # DDMMYYYY
 
-            resp = self._make_request(url, max_retries=2)
-            if not resp:
-                self._log("OFFLINE_API", "FAIL", "offline.turfinfo.api.pmu.fr inaccessible")
-                return []
+        for version in OFFLINE_API_CLIENT_VERSIONS:
+            try:
+                url = f"{OFFLINE_API_HOST}/{version}/programme/{date_pmu}"
+                resp = self._make_request(url, max_retries=2)
+                if not resp:
+                    continue
 
-            data = resp.json()
-            courses = self._parse_offline_program_json(data, date_str, source="PMU_OFFLINE_API")
-            if courses:
-                self._log("OFFLINE_API", "OK", f"{len(courses)} courses via offline.turfinfo.api.pmu.fr")
-            return courses
+                data = resp.json()
+                if not isinstance(data, dict):
+                    self._log(
+                        "OFFLINE_API", "SKIP",
+                        f"client/{version} a répondu un {type(data).__name__} "
+                        f"au lieu d'un objet JSON : {str(data)[:80]}"
+                    )
+                    continue
 
-        except Exception as e:
-            self._log("OFFLINE_API", "FAIL", str(e)[:100])
-            return []
+                courses = self._parse_offline_program_json(data, date_str, source="PMU_OFFLINE_API")
+                if courses:
+                    self._log("OFFLINE_API", "OK", f"{len(courses)} courses via client/{version}")
+                    return courses
+
+            except Exception as e:
+                self._log("OFFLINE_API", "RETRY", f"client/{version}: {str(e)[:80]}")
+                continue
+
+        self._log("OFFLINE_API", "FAIL", "offline.turfinfo.api.pmu.fr inaccessible (toutes versions testées)")
+        return []
 
     def _parse_offline_program_json(self, data: dict, date_str: str, source: str) -> List[Course]:
         """Parse commun pour les deux variantes de l'API JSON PMU (même structure)."""
         courses = []
-        reunions = data.get("programme", {}).get("reunions", [])
+        programme = data.get("programme")
+        if not isinstance(programme, dict):
+            return []
+        reunions = programme.get("reunions", [])
+        if not isinstance(reunions, list):
+            return []
+
         for reunion in reunions:
-            hippodrome = reunion.get("hippodrome", {}).get("libelleLong", "")
+            if not isinstance(reunion, dict):
+                continue
+            hippodrome = (reunion.get("hippodrome") or {}).get("libelleLong", "")
             for course_data in reunion.get("courses", []):
+                if not isinstance(course_data, dict):
+                    continue
                 course_id = f"R{reunion.get('numOrdre', 1)}C{course_data.get('numOrdre', 1)}"
                 courses.append(Course(
                     course_id   = course_id,
@@ -469,35 +496,52 @@ class PMUAdapter:
         """
         Essaie l'API JSON publique offline.turfinfo.api.pmu.fr pour les
         partants — dernier recours, domaine différent de pmu.fr.
+        Teste les mêmes versions de "client" que _try_offline_api.
         """
-        try:
-            rc_match = re.search(r"R(\d+)C(\d+)", course.course_id)
-            if not rc_match:
-                return []
-
-            r_num = rc_match.group(1)
-            c_num = rc_match.group(2)
-
-            year, month, day = course.date.split("-")
-            date_pmu = f"{day}{month}{year}"  # DDMMYYYY
-
-            url = f"{OFFLINE_API_BASE}/programme/{date_pmu}/R{r_num}/C{c_num}/participants"
-            resp = self._make_request(url, max_retries=2)
-            if not resp:
-                return []
-
-            data = resp.json()
-            return self._parse_offline_runners_json(data)
-
-        except Exception as e:
-            logger.debug(f"PMU offline API runners error: {e}")
+        rc_match = re.search(r"R(\d+)C(\d+)", course.course_id)
+        if not rc_match:
             return []
+
+        r_num = rc_match.group(1)
+        c_num = rc_match.group(2)
+
+        year, month, day = course.date.split("-")
+        date_pmu = f"{day}{month}{year}"  # DDMMYYYY
+
+        for version in OFFLINE_API_CLIENT_VERSIONS:
+            try:
+                url = f"{OFFLINE_API_HOST}/{version}/programme/{date_pmu}/R{r_num}/C{c_num}/participants"
+                resp = self._make_request(url, max_retries=2)
+                if not resp:
+                    continue
+
+                data = resp.json()
+                if not isinstance(data, dict):
+                    continue
+
+                runners = self._parse_offline_runners_json(data)
+                if runners:
+                    return runners
+
+            except Exception as e:
+                logger.debug(f"PMU offline API runners error (client/{version}): {e}")
+                continue
+
+        return []
 
     def _parse_offline_runners_json(self, data: dict) -> List[Runner]:
         """Parse commun pour les réponses JSON 'participants' (mêmes clés sur les deux APIs)."""
         runners = []
-        for partant in data.get("participants", data.get("partants", [])):
+        participants = data.get("participants", data.get("partants", []))
+        if not isinstance(participants, list):
+            return []
+
+        for partant in participants:
+            if not isinstance(partant, dict):
+                continue
             cheval = partant.get("cheval", partant)
+            if not isinstance(cheval, dict):
+                cheval = {}
             try:
                 forme_brute = cheval.get("formeDetail", "")
                 runner = Runner(

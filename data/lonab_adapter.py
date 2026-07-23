@@ -24,6 +24,10 @@ logger = get_logger(__name__)
 
 TIMEOUT = config.sources.get("lonab", {}).get("timeout_seconds", 20)
 
+# Dossier de debug : quand 0 partant est trouvé, on dépose un extrait du texte
+# brut du PDF ici pour pouvoir diagnostiquer sans avoir à relancer le run.
+DEBUG_DIR = "./data/cache/lonab/debug"
+
 
 class LonabAdapter:
     """
@@ -52,7 +56,7 @@ class LonabAdapter:
         """
         Retourne (course_lonab, methode_utilisee).
         course_lonab peut être None si toutes les méthodes échouent.
-        
+
         Cascade :
           1. PDF Scraper (éprouvé V7)
           2. Gemini Vision (dernier recours)
@@ -142,6 +146,14 @@ class LonabAdapter:
                     text = page.extract_text()
                     if text:
                         full_text += text + "\n"
+                    # Filet de sécurité : certaines mises en page (réunions
+                    # d'import comme Vincennes) ne se parsent pas bien avec
+                    # les réglages par défaut. On retente avec un tolérance
+                    # de tri de mots plus fine si la page n'a rien donné.
+                    elif page.extract_words():
+                        text_alt = page.extract_text(x_tolerance=1, y_tolerance=1)
+                        if text_alt:
+                            full_text += text_alt + "\n"
 
                 if not full_text.strip():
                     logger.debug("[LONAB] PDF vide ou scanné — aucun texte extrait")
@@ -154,10 +166,28 @@ class LonabAdapter:
             logger.warning(f"[LONAB] Erreur extraction PDF : {str(e)[:100]}")
             return None
 
+    def _dump_debug_text(self, text: str, date_str: str, hippodrome: str):
+        """
+        Sauvegarde un extrait du texte brut quand 0 partant est trouvé,
+        pour pouvoir diagnostiquer la mise en page sans reproduire le run.
+        """
+        try:
+            os.makedirs(DEBUG_DIR, exist_ok=True)
+            path = os.path.join(DEBUG_DIR, f"{date_str}_{hippodrome}_0partants.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text[:4000])
+            logger.warning(f"[LONAB] 0 partants — extrait brut sauvegardé : {path}")
+        except Exception as e:
+            logger.debug(f"[LONAB] Impossible d'écrire le debug dump : {e}")
+
     def _parse_text_content(self, text: str, date_str: str, source: str) -> Optional[Course]:
         """
         Parse du texte brut (PDF) pour extraire une course.
         Patterns génériques adaptés aux journaux hippiques.
+
+        Cascade de 3 patterns, du plus strict au plus permissif, car la
+        mise en page LONAB diffère entre réunions locales et réunions
+        d'import (Vincennes, Cagnes, etc.).
         """
         lines = text.split("\n")
 
@@ -169,9 +199,7 @@ class LonabAdapter:
             "Enghien", "Compiegne", "Fontainebleau", "Le Croise-Laroche"
         ]
         hippodrome = None
-        hippodrome_line = None
 
-        # Première passe : trouver hippodrome dans tout le texte
         for hp in hippodromes_fr:
             if hp.lower() in text.lower():
                 hippodrome = hp
@@ -183,48 +211,13 @@ class LonabAdapter:
 
         logger.info(f"[LONAB] Hippodrome trouvé : {hippodrome}")
 
-        # Chercher les partants (lignes avec numéro + nom + cote)
-        runners = []
-        runner_pattern = re.compile(
-            r"^(\d{1,2})\s+([A-Z][A-Z\s\'\-]{2,50}?)\s+.*?(\d+[\.,]\d+)\s*$",
-            re.MULTILINE
-        )
-
-        # Alternative : pattern plus flexible pour pdfplumber
-        for line in lines:
-            line_stripped = line.strip()
-            if not line_stripped or len(line_stripped) < 5:
-                continue
-
-            # Pattern 1 : strict (Numero Nom ... Cote)
-            match = runner_pattern.match(line_stripped)
-            if match:
-                try:
-                    numero = int(match.group(1))
-                    nom = match.group(2).strip()
-                    cote = float(match.group(3).replace(",", "."))
-
-                    # Extraire poids si présent
-                    poids_match = re.search(r"(\d{2,3}[\.,]\d+)\s*kg", line)
-                    poids = float(poids_match.group(1).replace(",", ".")) if poids_match else 58.0
-
-                    runner = Runner(
-                        numero=numero,
-                        nom=nom,
-                        poids=poids,
-                        cote_officielle=cote,
-                        source=source
-                    )
-                    runners.append(runner)
-                    logger.debug(f"[LONAB] Partant trouvé : {numero} {nom}")
-                except Exception as e:
-                    logger.debug(f"[LONAB] Erreur parsing partant : {e}")
-                    continue
+        runners = self._extract_runners(lines)
 
         logger.info(f"[LONAB] {len(runners)} partants trouvés")
 
         if len(runners) < 3:
             logger.warning(f"[LONAB] Insufficient runners: {len(runners)} < 3")
+            self._dump_debug_text(text, date_str, hippodrome)
             return None
 
         # Chercher nom de course
@@ -263,11 +256,83 @@ class LonabAdapter:
             source=source
         )
 
+    def _extract_runners(self, lines: List[str]) -> List[Runner]:
+        """
+        Essaie plusieurs patterns d'extraction, du plus strict au plus
+        permissif. S'arrête au premier pattern qui trouve >= 3 partants.
+        """
+        # Pattern 1 (original) : Numero Nom(MAJUSCULES) ... Cote décimale en fin de ligne
+        strict_pattern = re.compile(
+            r"^(\d{1,2})\s+([A-Z][A-Z\s\'\-]{2,50}?)\s+.*?(\d+[\.,]\d+)\s*$"
+        )
+
+        # Pattern 2 : plus tolérant sur la casse du nom et la position de la cote
+        # (utile pour les réunions d'import dont la mise en page diffère)
+        loose_pattern = re.compile(
+            r"^(\d{1,2})\s{1,4}([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\'\-\.]{2,50}?)\s{2,}.*?(\d+[\.,]\d+)?\s*$"
+        )
+
+        # Pattern 3 : découpage par colonnes larges (2+ espaces), sans exiger
+        # de cote — la cote sera enrichie plus tard via PMU si besoin.
+        column_pattern = re.compile(r"^(\d{1,2})\s{2,}([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s\'\-\.]{2,50})")
+
+        for pattern in (strict_pattern, loose_pattern, column_pattern):
+            runners = self._apply_runner_pattern(lines, pattern)
+            if len(runners) >= 3:
+                return runners
+
+        # Aucun pattern n'a donné >= 3 : on retourne le meilleur essai quand même
+        # (permet au caller de logguer le nombre réel trouvé)
+        best = self._apply_runner_pattern(lines, strict_pattern)
+        return best
+
+    def _apply_runner_pattern(self, lines: List[str], pattern: re.Pattern) -> List[Runner]:
+        runners = []
+        for line in lines:
+            line_stripped = line.strip()
+            if not line_stripped or len(line_stripped) < 5:
+                continue
+
+            match = pattern.match(line_stripped)
+            if not match:
+                continue
+
+            try:
+                numero = int(match.group(1))
+                nom = match.group(2).strip().upper()
+
+                cote_raw = match.group(3) if match.lastindex and match.lastindex >= 3 else None
+                cote = float(cote_raw.replace(",", ".")) if cote_raw else 0.0
+
+                poids_match = re.search(r"(\d{2,3}[\.,]\d+)\s*kg", line)
+                poids = float(poids_match.group(1).replace(",", ".")) if poids_match else 58.0
+
+                runner = Runner(
+                    numero=numero,
+                    nom=nom,
+                    poids=poids,
+                    cote_officielle=cote,
+                    source="LONAB_PDF"
+                )
+                runners.append(runner)
+                logger.debug(f"[LONAB] Partant trouvé : {numero} {nom}")
+            except Exception as e:
+                logger.debug(f"[LONAB] Erreur parsing partant : {e}")
+                continue
+
+        return runners
+
     # ──────────────────────────────────────────────────────────────────
     # TENTATIVE 2 — GEMINI VISION (DERNIER RECOURS)
     # ──────────────────────────────────────────────────────────────────
     def _try_gemini_vision(self, target_date: datetime, date_str: str) -> Optional[Course]:
-        """Utilise Gemini Vision comme dernier recours."""
+        """
+        Utilise Gemini Vision comme dernier recours.
+
+        Migré vers le SDK `google-genai` (le SDK `google-generativeai` est
+        déprécié) et vers le modèle `gemini-2.0-flash` (gemini-1.5-flash
+        n'est plus servi par l'API v1beta — d'où le 404 dans le run précédent).
+        """
         try:
             from utils.quota_manager import quota_manager
 
@@ -281,22 +346,25 @@ class LonabAdapter:
 
             pdf_path = scraper_result.pdf_path
 
-            import base64
             with open(pdf_path, "rb") as f:
-                pdf_b64 = base64.b64encode(f.read()).decode("utf-8")
+                pdf_bytes = f.read()
 
             prompt = self._build_vision_prompt(date_str)
 
-            # Appel Gemini Vision
-            import google.generativeai as genai
-            key = quota_manager.keys[quota_manager.current]["value"]
-            genai.configure(api_key=key)
+            # Nouveau SDK : google-genai
+            from google import genai
+            from google.genai import types
 
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content([
-                {"mime_type": "application/pdf", "data": pdf_b64},
-                prompt
-            ])
+            key = quota_manager.keys[quota_manager.current]["value"]
+            client = genai.Client(api_key=key)
+
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
+                    prompt,
+                ],
+            )
 
             quota_manager.keys[quota_manager.current]["calls"] += 1
             self._log("GEMINI_VISION", "APPEL_EFFECTUE", "1 token utilisé")

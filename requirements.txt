@@ -2,7 +2,7 @@
 # Installer : pip install -r requirements.txt
 
 # ── IA & LLM ──────────────────────────────────
-google-generativeai>=0.5.0
+google-genai==2.0.1
 
 # ── Firebase ──────────────────────────────────
 firebase-admin>=6.0.0

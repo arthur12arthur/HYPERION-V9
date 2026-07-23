@@ -2,7 +2,7 @@
 HYPERION V9 — Schémas Pydantic complets
 S001 → S033 : tous les contrats de données du système
 """
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
@@ -105,7 +105,8 @@ class Runner(BaseModel):
     source: Optional[str] = None
     is_non_partant: bool = False
 
-    @validator("cote_officielle")
+    @field_validator("cote_officielle")
+    @classmethod
     def cote_must_be_positive(cls, v):
         if v < 0:
             raise ValueError("cote_officielle doit être >= 0")
@@ -424,8 +425,10 @@ class ScoringWeights(BaseModel):
     handicap: float = 0.10
     fraicheur: float = 0.10
 
-    @validator("fraicheur", always=True)
-    def weights_sum_to_one(cls, v, values):
+    @field_validator("fraicheur")
+    @classmethod
+    def weights_sum_to_one(cls, v, info):
+        values = info.data
         total = sum([
             values.get("historique", 0),
             values.get("forme", 0),
@@ -522,6 +525,5 @@ class GeminiQuotaReport(BaseModel):
 
 
 # Résolution des références forward
-ProgramDocument.update_forward_refs()
-Course.update_forward_refs()
-    
+ProgramDocument.model_rebuild()
+Course.model_rebuild()

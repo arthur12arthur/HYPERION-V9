@@ -44,3 +44,12 @@ jobs:
           name: hyperion-logs-morning
           path: backup/logs/
           retention-days: 7
+
+      - name: Upload LONAB debug dumps
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lonab-debug-dumps
+          path: data/cache/lonab/debug/
+          retention-days: 7
+          if-no-files-found: ignore

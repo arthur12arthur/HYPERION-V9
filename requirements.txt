@@ -12,7 +12,9 @@ pyyaml>=6.0
 python-dotenv>=1.0.0
 
 # ── Validation des données ────────────────────
-pydantic>=1.10.0,<2.0.0
+# Migré vers Pydantic v2 (domain/schemas.py utilise field_validator /
+# model_rebuild) — nécessaire car google-genai exige pydantic>=2.9.
+pydantic>=2.9.0,<3.0.0
 
 # ── Requêtes HTTP & Scraping ──────────────────
 requests>=2.31.0

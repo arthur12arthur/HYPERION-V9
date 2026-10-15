@@ -1,4 +1,9 @@
-from setuptools import setup
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
 
-if __name__ == "__main__":
-    setup()
+[project]
+name = "hyperion-v9"
+version = "0.0.1"
+description = "Hyperion v9"
+requires-python = ">=3.11"

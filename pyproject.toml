@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=45", "wheel"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,9 +8,8 @@ version = "0.1.0"
 description = "Hyperion V9 — Analyse LONAB Quotidienne"
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [
-    {name = "arthur12arthur"}
-]
+authors = [{name = "arthur12arthur"}]
+
 dependencies = [
     "httpx>=0.28.1,<1.0.0",
     "requests==2.31.0",
@@ -24,4 +23,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["src"]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]

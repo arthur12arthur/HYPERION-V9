@@ -1,57 +1,61 @@
-name: CI
+name: Hyperion v9 — Analyse LONAB Quotidienne
 
 on:
-  push:
-    branches:
-      - "**"
-  pull_request:
-    branches:
-      - "**"
+  schedule:
+    - cron: '0 9 * * *'   # 09h00 UTC = 09h00 Ouagadougou
+    - cron: '0 11 * * *'  # 11h00 UTC = 11h00 Ouagadougou
   workflow_dispatch:
+    inputs:
+      date:
+        description: 'Date YYYY-MM-DD (vide = aujourd hui)'
+        required: false
+        default: ''
 
 jobs:
-  python-check:
+  analyse-lonab:
+    name: Analyse des courses LONAB
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11"]
+    timeout-minutes: 30
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'
+          cache: 'pip'
 
-      - name: Installer les dépendances
+      - name: Installer dependances
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          fi
-          if [ -f setup.py ]; then
-            pip install -e .
-          fi
+          pip install -r requirements.txt
+          pip install -e .
 
-      - name: Vérifier la syntaxe Python
-        run: |
-          python -m compileall .
+      - name: Creer dossiers
+        run: mkdir -p data/cache outputs logs
 
-      - name: Vérifier flake8 si installé
+      - name: Lancer Hyperion V9
         run: |
-          if command -v flake8 >/dev/null 2>&1; then
-            flake8 .
-          else
-            echo "flake8 non installé : étape ignorée"
+          ARGS=""
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            ARGS="--date ${{ github.event.inputs.date }}"
           fi
+          python main.py $ARGS
 
-      - name: Lancer les tests pytest si présents
-        run: |
-          if [ -f pytest.ini ] || [ -d tests ] || ls *_test.py >/dev/null 2>&1; then
-            pytest -q
-          else
-            echo "Aucun test détecté, étape ignorée"
-          fi
+      - name: Upload resultats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hyperion-results-${{ github.run_id }}
+          path: |
+            outputs/
+            logs/
+            data/hyperion_v9.db
+          retention-days: 39
